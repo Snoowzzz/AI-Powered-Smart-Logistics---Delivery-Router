@@ -2,11 +2,12 @@ import pygame
 
 pygame.init()
 
-# Window settings
+# -----------------------------
+# Window / Grid configuration
+# -----------------------------
+
 WIDTH = 800
 HEIGHT = 800
-
-# Grid settings
 ROWS = 20
 COLS = 20
 CELL_SIZE = WIDTH // COLS
@@ -16,57 +17,159 @@ pygame.display.set_caption("AI Smart Logistics Router")
 
 clock = pygame.time.Clock()
 
-# Store clicked/blocked cells
+
+# -----------------------------
+# Grid state
+# -----------------------------
+
 blocked_cells = set()
+
+start = None
+goal = None
+
+mode = "obstacle"
+
+
+# -----------------------------
+# Colors
+# -----------------------------
+
+WHITE = (255, 255, 255)
+BLACK = (0, 0, 0)
+GRAY = (100, 100, 100)
+GREEN = (0, 200, 0)
+RED = (200, 0, 0)
+
+
+# -----------------------------
+# Main loop
+# -----------------------------
 
 running = True
 
 while running:
 
-    # Handle events
     for event in pygame.event.get():
 
+        # Quit
         if event.type == pygame.QUIT:
             running = False
 
-        # Left mouse click
-        if event.type == pygame.MOUSEBUTTONDOWN:
+        # Keyboard controls
+        elif event.type == pygame.KEYDOWN:
+
+            if event.key == pygame.K_1:
+                mode = "start"
+
+            elif event.key == pygame.K_2:
+                mode = "goal"
+
+            elif event.key == pygame.K_3:
+                mode = "obstacle"
+
+            elif event.key == pygame.K_r:
+                blocked_cells.clear()
+                start = None
+                goal = None
+
+        # Mouse click
+        elif event.type == pygame.MOUSEBUTTONDOWN:
+
             mouse_x, mouse_y = event.pos
 
-            col = mouse_x // CELL_SIZE
             row = mouse_y // CELL_SIZE
+            col = mouse_x // CELL_SIZE
 
-            blocked_cells.add((row, col))
+            cell = (row, col)
 
-    # Background
-    screen.fill((30, 30, 30))
+            # -------------------------
+            # Set start
+            # -------------------------
 
-    # Draw grid
+            if mode == "start":
+
+                # Remove old start
+                start = cell
+
+                # A start cannot be an obstacle
+                blocked_cells.discard(cell)
+
+            # -------------------------
+            # Set goal
+            # -------------------------
+
+            elif mode == "goal":
+
+                goal = cell
+
+                # A goal cannot be an obstacle
+                blocked_cells.discard(cell)
+
+            # -------------------------
+            # Toggle obstacle
+            # -------------------------
+
+            elif mode == "obstacle":
+
+                # Don't allow obstacle on start
+                # or goal
+                if cell != start and cell != goal:
+
+                    if cell in blocked_cells:
+                        blocked_cells.remove(cell)
+                    else:
+                        blocked_cells.add(cell)
+
+    # -----------------------------
+    # Drawing
+    # -----------------------------
+
+    screen.fill(WHITE)
+
     for row in range(ROWS):
+
         for col in range(COLS):
+
+            cell = (row, col)
 
             x = col * CELL_SIZE
             y = row * CELL_SIZE
 
-            if (row, col) in blocked_cells:
-                color = (80, 80, 80)
-            else:
-                color = (220, 220, 220)
+            # Obstacle
+            if cell in blocked_cells:
+                pygame.draw.rect(
+                    screen,
+                    GRAY,
+                    (x, y, CELL_SIZE, CELL_SIZE)
+                )
 
+            # Start
+            elif cell == start:
+                pygame.draw.rect(
+                    screen,
+                    GREEN,
+                    (x, y, CELL_SIZE, CELL_SIZE)
+                )
+
+            # Goal
+            elif cell == goal:
+                pygame.draw.rect(
+                    screen,
+                    RED,
+                    (x, y, CELL_SIZE, CELL_SIZE)
+                )
+
+            # Grid lines
             pygame.draw.rect(
                 screen,
-                color,
-                (x, y, CELL_SIZE, CELL_SIZE)
-            )
-
-            pygame.draw.rect(
-                screen,
-                (40, 40, 40),
+                BLACK,
                 (x, y, CELL_SIZE, CELL_SIZE),
                 1
             )
 
     pygame.display.flip()
+
     clock.tick(60)
+
 
 pygame.quit()
