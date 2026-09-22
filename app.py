@@ -125,6 +125,9 @@ while running:
             col = mouse_x // CELL_SIZE
 
             cell = (row, col)
+            if start is not None:
+                print("Start:", start)
+                print("Neighbors:", get_neighbors(start))
 
             # -------------------------
             # Start / Depot
