@@ -3,13 +3,15 @@ import pygame
 pygame.init()
 
 # -----------------------------
-# Window / Grid configuration
+# Window / Grid
 # -----------------------------
 
 WIDTH = 800
 HEIGHT = 800
+
 ROWS = 20
 COLS = 20
+
 CELL_SIZE = WIDTH // COLS
 
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
@@ -37,8 +39,46 @@ mode = "obstacle"
 WHITE = (255, 255, 255)
 BLACK = (0, 0, 0)
 GRAY = (100, 100, 100)
+
 GREEN = (0, 200, 0)
 RED = (200, 0, 0)
+
+
+# -----------------------------
+# Find valid neighboring cells
+# -----------------------------
+
+def get_neighbors(cell):
+
+    row, col = cell
+
+    possible_neighbors = [
+        (row - 1, col),  # up
+        (row + 1, col),  # down
+        (row, col - 1),  # left
+        (row, col + 1)   # right
+    ]
+
+    valid_neighbors = []
+
+    for neighbor in possible_neighbors:
+
+        n_row, n_col = neighbor
+
+        # Check if inside grid
+        if n_row < 0 or n_row >= ROWS:
+            continue
+
+        if n_col < 0 or n_col >= COLS:
+            continue
+
+        # Check if blocked
+        if neighbor in blocked_cells:
+            continue
+
+        valid_neighbors.append(neighbor)
+
+    return valid_neighbors
 
 
 # -----------------------------
@@ -55,24 +95,28 @@ while running:
         if event.type == pygame.QUIT:
             running = False
 
-        # Keyboard controls
+        # Keyboard
         elif event.type == pygame.KEYDOWN:
 
+            # Set depot
             if event.key == pygame.K_1:
                 mode = "start"
 
+            # Set delivery
             elif event.key == pygame.K_2:
                 mode = "goal"
 
+            # Set/remove obstacles
             elif event.key == pygame.K_3:
                 mode = "obstacle"
 
+            # Reset
             elif event.key == pygame.K_r:
                 blocked_cells.clear()
                 start = None
                 goal = None
 
-        # Mouse click
+        # Mouse
         elif event.type == pygame.MOUSEBUTTONDOWN:
 
             mouse_x, mouse_y = event.pos
@@ -83,45 +127,39 @@ while running:
             cell = (row, col)
 
             # -------------------------
-            # Set start
+            # Start / Depot
             # -------------------------
 
             if mode == "start":
 
-                # Remove old start
                 start = cell
-
-                # A start cannot be an obstacle
                 blocked_cells.discard(cell)
 
             # -------------------------
-            # Set goal
+            # Goal / Delivery
             # -------------------------
 
             elif mode == "goal":
 
                 goal = cell
-
-                # A goal cannot be an obstacle
                 blocked_cells.discard(cell)
 
             # -------------------------
-            # Toggle obstacle
+            # Obstacles
             # -------------------------
 
             elif mode == "obstacle":
 
-                # Don't allow obstacle on start
-                # or goal
                 if cell != start and cell != goal:
 
                     if cell in blocked_cells:
                         blocked_cells.remove(cell)
+
                     else:
                         blocked_cells.add(cell)
 
     # -----------------------------
-    # Drawing
+    # Draw grid
     # -----------------------------
 
     screen.fill(WHITE)
@@ -137,22 +175,25 @@ while running:
 
             # Obstacle
             if cell in blocked_cells:
+
                 pygame.draw.rect(
                     screen,
                     GRAY,
                     (x, y, CELL_SIZE, CELL_SIZE)
                 )
 
-            # Start
+            # Depot
             elif cell == start:
+
                 pygame.draw.rect(
                     screen,
                     GREEN,
                     (x, y, CELL_SIZE, CELL_SIZE)
                 )
 
-            # Goal
+            # Delivery
             elif cell == goal:
+
                 pygame.draw.rect(
                     screen,
                     RED,
