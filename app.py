@@ -37,6 +37,21 @@ mode = "obstacle"
 
 
 # -----------------------------
+# A* animation state
+# -----------------------------
+
+searching = False
+search_finished = False
+
+open_heap = []
+came_from = {}
+g_score = {}
+
+search_start = None
+search_goal = None
+
+
+# -----------------------------
 # Colors
 # -----------------------------
 
@@ -103,85 +118,162 @@ def heuristic(a, b):
 
 def reconstruct_path(came_from, current):
 
-    path = [current]
+    result = [current]
 
     while current in came_from:
 
         current = came_from[current]
-        path.append(current)
+        result.append(current)
 
-    path.reverse()
+    result.reverse()
 
-    return path
+    return result
 
 
 # -----------------------------
-# A* Pathfinding
+# Start A* search
 # -----------------------------
 
-def a_star(start, goal):
+def start_a_star():
+
+    global searching
+    global search_finished
+    global open_heap
+    global came_from
+    global g_score
+    global explored
+    global path
+    global search_start
+    global search_goal
+
+    if start is None or goal is None:
+        return
+
+    searching = True
+    search_finished = False
+
+    path = []
+    explored = set()
 
     open_heap = []
-
-    heapq.heappush(
-        open_heap,
-        (0, start)
-    )
-
     came_from = {}
 
     g_score = {
         start: 0
     }
 
-    explored = set()
+    search_start = start
+    search_goal = goal
 
-    while open_heap:
+    heapq.heappush(
+        open_heap,
+        (
+            heuristic(start, goal),
+            start
+        )
+    )
 
-        current_f, current = heapq.heappop(open_heap)
 
-        # Ignore cells already processed
-        if current in explored:
-            continue
+# -----------------------------
+# Perform one A* step
+# -----------------------------
 
-        explored.add(current)
+def a_star_step():
 
-        # Goal reached
-        if current == goal:
+    global searching
+    global search_finished
+    global path
 
-            final_path = reconstruct_path(
-                came_from,
-                current
+    # Nothing to do
+    if not searching:
+        return
+
+    # No more cells to explore
+    if not open_heap:
+
+        searching = False
+        search_finished = True
+
+        return
+
+    # Get best cell
+    current_f, current = heapq.heappop(open_heap)
+
+    # Ignore already explored cells
+    if current in explored:
+
+        return
+
+    # Mark as explored
+    explored.add(current)
+
+    # Goal reached
+    if current == search_goal:
+
+        path = reconstruct_path(
+            came_from,
+            current
+        )
+
+        searching = False
+        search_finished = True
+
+        return
+
+    # Check neighbors
+    for neighbor in get_neighbors(current):
+
+        tentative_g = g_score[current] + 1
+
+        if tentative_g < g_score.get(
+            neighbor,
+            float("inf")
+        ):
+
+            came_from[neighbor] = current
+
+            g_score[neighbor] = tentative_g
+
+            f_score = (
+                tentative_g
+                + heuristic(
+                    neighbor,
+                    search_goal
+                )
             )
 
-            return final_path, explored
-
-        # Check neighbors
-        for neighbor in get_neighbors(current):
-
-            tentative_g = g_score[current] + 1
-
-            if tentative_g < g_score.get(
-                neighbor,
-                float("inf")
-            ):
-
-                came_from[neighbor] = current
-
-                g_score[neighbor] = tentative_g
-
-                f_score = (
-                    tentative_g
-                    + heuristic(neighbor, goal)
+            heapq.heappush(
+                open_heap,
+                (
+                    f_score,
+                    neighbor
                 )
+            )
 
-                heapq.heappush(
-                    open_heap,
-                    (f_score, neighbor)
-                )
 
-    # No route exists
-    return [], explored
+# -----------------------------
+# Reset search
+# -----------------------------
+
+def reset_search():
+
+    global searching
+    global search_finished
+    global path
+    global explored
+    global open_heap
+    global came_from
+    global g_score
+
+    searching = False
+    search_finished = False
+
+    path = []
+    explored = set()
+
+    open_heap = []
+    came_from = {}
+    g_score = {}
 
 
 # -----------------------------
@@ -192,10 +284,15 @@ running = True
 
 while running:
 
+    # -------------------------
+    # Events
+    # -------------------------
+
     for event in pygame.event.get():
 
         # Quit
         if event.type == pygame.QUIT:
+
             running = False
 
         # Keyboard
@@ -203,25 +300,31 @@ while running:
 
             # Set depot
             if event.key == pygame.K_1:
-                mode = "start"
+
+                if not searching:
+
+                    mode = "start"
 
             # Set delivery
             elif event.key == pygame.K_2:
-                mode = "goal"
 
-            # Set/remove obstacles
+                if not searching:
+
+                    mode = "goal"
+
+            # Set obstacles
             elif event.key == pygame.K_3:
-                mode = "obstacle"
 
-            # Run A*
+                if not searching:
+
+                    mode = "obstacle"
+
+            # Start A*
             elif event.key == pygame.K_SPACE:
 
                 if start is not None and goal is not None:
 
-                    path, explored = a_star(
-                        start,
-                        goal
-                    )
+                    start_a_star()
 
             # Reset
             elif event.key == pygame.K_r:
@@ -231,11 +334,14 @@ while running:
                 start = None
                 goal = None
 
-                path = []
-                explored = set()
+                reset_search()
 
         # Mouse
         elif event.type == pygame.MOUSEBUTTONDOWN:
+
+            # Don't modify map during search
+            if searching:
+                continue
 
             mouse_x, mouse_y = event.pos
 
@@ -251,10 +357,10 @@ while running:
             if mode == "start":
 
                 start = cell
+
                 blocked_cells.discard(cell)
 
-                path = []
-                explored = set()
+                reset_search()
 
             # -------------------------
             # Goal / Delivery
@@ -263,10 +369,10 @@ while running:
             elif mode == "goal":
 
                 goal = cell
+
                 blocked_cells.discard(cell)
 
-                path = []
-                explored = set()
+                reset_search()
 
             # -------------------------
             # Obstacles
@@ -284,8 +390,15 @@ while running:
 
                         blocked_cells.add(cell)
 
-                    path = []
-                    explored = set()
+                    reset_search()
+
+    # -----------------------------
+    # Perform A* step
+    # -----------------------------
+
+    if searching:
+
+        a_star_step()
 
     # -----------------------------
     # Draw grid
@@ -357,7 +470,8 @@ while running:
 
     pygame.display.flip()
 
-    clock.tick(60)
+    # Lower FPS makes the search easier to see
+    clock.tick(15)
 
 
 pygame.quit()

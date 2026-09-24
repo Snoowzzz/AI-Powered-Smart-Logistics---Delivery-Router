@@ -7,14 +7,19 @@ Build a working **AI-Powered Smart Logistics & Delivery Router** in Pygame that 
 
 ## Current Status
 
-**Milestone 2 in progress: Interactive city/grid setup is working.**
+**Milestone 4 complete: Core A* pathfinding and animated search visualization are working.**
 
-The basic Pygame grid is complete, and the application can now represent the main elements needed before pathfinding:
+The basic Pygame grid is complete, and the application now has a working pathfinding pipeline:
 
 - Depot / Start
 - Delivery / Goal
 - Obstacles / Blocked cells
-- Valid neighboring cells for pathfinding
+- Valid neighboring cells
+- A* pathfinding
+- Manhattan heuristic
+- Final path reconstruction
+- Explored-cell visualization
+- Step-by-step animated A* search
 
 The project is currently being developed toward a **working, presentable prototype first**, rather than spending too much time on refinement early.
 
@@ -119,8 +124,60 @@ Current understanding includes:
 - Obstacles represent unavailable nodes
 - `set` is useful for fast blocked-cell membership checks
 - A neighbor function determines which nodes can be reached from a cell
+- A priority queue can be used to process the most promising A* cell next
+- `g` represents the known cost from the start
+- `h` represents an estimated remaining cost to the goal
+- `f = g + h` combines the known and estimated costs
+- Manhattan distance is appropriate for the current 4-direction movement
+- `came_from` can reconstruct the final route
+- A* can be separated into search state and visualization state
+- The Pygame loop can advance the search one step at a time for animation
 
 DSA knowledge should continue to be developed alongside the project rather than assuming advanced DSA knowledge.
+
+---
+
+## A* Pathfinding
+
+### Core A* implementation
+
+Implemented A* using:
+
+- `heapq` as a priority queue
+- `g_score` for the cost from the depot to a cell
+- Manhattan distance as the heuristic
+- `f = g + h` to prioritize cells
+- `came_from` to remember the previous cell
+- Path reconstruction once the delivery destination is reached
+
+For the current 4-direction grid, each normal movement has a cost of `1`.
+
+### Search visualization
+
+A* now exposes the cells it has explored so the Pygame interface can visualize the algorithm.
+
+- Blue cells = explored/search cells
+- Yellow cells = final route
+- Gray cells = obstacles
+- Green cell = depot
+- Red cell = delivery
+
+### Animated search
+
+The A* algorithm was changed from running completely in one function call to maintaining search state across the Pygame game loop.
+
+The main search state includes:
+
+- `open_heap`
+- `came_from`
+- `g_score`
+- `explored`
+- `searching`
+- `search_finished`
+
+`a_star_step()` performs one search step per game-loop iteration, allowing the explored area to appear progressively on screen.
+
+This is an important architectural step because the pathfinding algorithm can now communicate its intermediate state to the visualization rather than only returning the final route.
 
 ---
 
@@ -152,27 +209,22 @@ We should avoid spending too much time on advanced concepts before the core rout
 
 ### Immediate priority
 
-Implement **A*** pathfinding on the existing grid.
+The core A* router and search visualization are now working.
 
-The first A* version should:
+Next priorities:
 
-- Use the existing `get_neighbors()`
-- Find a route from `start` to `goal`
-- Avoid obstacles
-- Use a suitable heuristic for the 4-direction grid
-- Reconstruct the final path
-- Display the path in Pygame
+- Add basic metrics
+- Display path cost
+- Display nodes explored
+- Display execution time
+- Then implement Dijkstra for comparison
 
-After that, we can add:
+After that, if time allows:
 
-- Search visualization / animation
-- Path cost
-- Nodes explored
-- Execution time
-- Dijkstra comparison
 - Traffic-aware costs
 - Vehicle animation
 - Dynamic replanning
+- UI refinement
 
 ---
 
@@ -192,7 +244,7 @@ After that, we can add:
 - Obstacles
 - Neighbor detection
 
-### Milestone 3 — A* Pathfinding ⏳
+### Milestone 3 — A* Pathfinding ✅
 
 - Implement A*
 - Manhattan heuristic
@@ -200,7 +252,7 @@ After that, we can add:
 - Reconstruct path
 - Draw final route
 
-### Milestone 4 — Visualization ⏳
+### Milestone 4 — Visualization ✅
 
 - Show explored cells
 - Animate search
