@@ -31,6 +31,7 @@ start = None
 goal = None
 
 path = []
+explored = set()
 
 mode = "obstacle"
 
@@ -45,6 +46,8 @@ GRAY = (100, 100, 100)
 
 GREEN = (0, 200, 0)
 RED = (200, 0, 0)
+
+BLUE = (100, 180, 255)
 YELLOW = (255, 200, 0)
 
 
@@ -118,28 +121,26 @@ def reconstruct_path(came_from, current):
 
 def a_star(start, goal):
 
-    # Priority queue
     open_heap = []
 
-    heapq.heappush(open_heap, (0, start))
+    heapq.heappush(
+        open_heap,
+        (0, start)
+    )
 
-    # Stores where each cell came from
     came_from = {}
 
-    # Cost from start to each cell
     g_score = {
         start: 0
     }
 
-    # Keep track of already processed cells
     explored = set()
 
     while open_heap:
 
-        # Get cell with lowest priority
         current_f, current = heapq.heappop(open_heap)
 
-        # Ignore cells we already processed
+        # Ignore cells already processed
         if current in explored:
             continue
 
@@ -153,14 +154,13 @@ def a_star(start, goal):
                 current
             )
 
-            return final_path
+            return final_path, explored
 
         # Check neighbors
         for neighbor in get_neighbors(current):
 
             tentative_g = g_score[current] + 1
 
-            # If this is a better route to the neighbor
             if tentative_g < g_score.get(
                 neighbor,
                 float("inf")
@@ -181,7 +181,7 @@ def a_star(start, goal):
                 )
 
     # No route exists
-    return []
+    return [], explored
 
 
 # -----------------------------
@@ -196,7 +196,6 @@ while running:
 
         # Quit
         if event.type == pygame.QUIT:
-
             running = False
 
         # Keyboard
@@ -204,17 +203,14 @@ while running:
 
             # Set depot
             if event.key == pygame.K_1:
-
                 mode = "start"
 
             # Set delivery
             elif event.key == pygame.K_2:
-
                 mode = "goal"
 
             # Set/remove obstacles
             elif event.key == pygame.K_3:
-
                 mode = "obstacle"
 
             # Run A*
@@ -222,7 +218,10 @@ while running:
 
                 if start is not None and goal is not None:
 
-                    path = a_star(start, goal)
+                    path, explored = a_star(
+                        start,
+                        goal
+                    )
 
             # Reset
             elif event.key == pygame.K_r:
@@ -233,6 +232,7 @@ while running:
                 goal = None
 
                 path = []
+                explored = set()
 
         # Mouse
         elif event.type == pygame.MOUSEBUTTONDOWN:
@@ -254,6 +254,7 @@ while running:
                 blocked_cells.discard(cell)
 
                 path = []
+                explored = set()
 
             # -------------------------
             # Goal / Delivery
@@ -265,6 +266,7 @@ while running:
                 blocked_cells.discard(cell)
 
                 path = []
+                explored = set()
 
             # -------------------------
             # Obstacles
@@ -283,6 +285,7 @@ while running:
                         blocked_cells.add(cell)
 
                     path = []
+                    explored = set()
 
     # -----------------------------
     # Draw grid
@@ -314,6 +317,15 @@ while running:
                 pygame.draw.rect(
                     screen,
                     YELLOW,
+                    (x, y, CELL_SIZE, CELL_SIZE)
+                )
+
+            # Explored cells
+            elif cell in explored:
+
+                pygame.draw.rect(
+                    screen,
+                    BLUE,
                     (x, y, CELL_SIZE, CELL_SIZE)
                 )
 
