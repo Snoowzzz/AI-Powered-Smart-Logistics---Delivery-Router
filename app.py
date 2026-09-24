@@ -1,4 +1,5 @@
 import pygame
+import heapq
 
 pygame.init()
 
@@ -29,6 +30,8 @@ blocked_cells = set()
 start = None
 goal = None
 
+path = []
+
 mode = "obstacle"
 
 
@@ -42,6 +45,7 @@ GRAY = (100, 100, 100)
 
 GREEN = (0, 200, 0)
 RED = (200, 0, 0)
+YELLOW = (255, 200, 0)
 
 
 # -----------------------------
@@ -82,6 +86,105 @@ def get_neighbors(cell):
 
 
 # -----------------------------
+# Manhattan heuristic
+# -----------------------------
+
+def heuristic(a, b):
+
+    return abs(a[0] - b[0]) + abs(a[1] - b[1])
+
+
+# -----------------------------
+# Reconstruct final path
+# -----------------------------
+
+def reconstruct_path(came_from, current):
+
+    path = [current]
+
+    while current in came_from:
+
+        current = came_from[current]
+        path.append(current)
+
+    path.reverse()
+
+    return path
+
+
+# -----------------------------
+# A* Pathfinding
+# -----------------------------
+
+def a_star(start, goal):
+
+    # Priority queue
+    open_heap = []
+
+    heapq.heappush(open_heap, (0, start))
+
+    # Stores where each cell came from
+    came_from = {}
+
+    # Cost from start to each cell
+    g_score = {
+        start: 0
+    }
+
+    # Keep track of already processed cells
+    explored = set()
+
+    while open_heap:
+
+        # Get cell with lowest priority
+        current_f, current = heapq.heappop(open_heap)
+
+        # Ignore cells we already processed
+        if current in explored:
+            continue
+
+        explored.add(current)
+
+        # Goal reached
+        if current == goal:
+
+            final_path = reconstruct_path(
+                came_from,
+                current
+            )
+
+            return final_path
+
+        # Check neighbors
+        for neighbor in get_neighbors(current):
+
+            tentative_g = g_score[current] + 1
+
+            # If this is a better route to the neighbor
+            if tentative_g < g_score.get(
+                neighbor,
+                float("inf")
+            ):
+
+                came_from[neighbor] = current
+
+                g_score[neighbor] = tentative_g
+
+                f_score = (
+                    tentative_g
+                    + heuristic(neighbor, goal)
+                )
+
+                heapq.heappush(
+                    open_heap,
+                    (f_score, neighbor)
+                )
+
+    # No route exists
+    return []
+
+
+# -----------------------------
 # Main loop
 # -----------------------------
 
@@ -93,6 +196,7 @@ while running:
 
         # Quit
         if event.type == pygame.QUIT:
+
             running = False
 
         # Keyboard
@@ -100,21 +204,35 @@ while running:
 
             # Set depot
             if event.key == pygame.K_1:
+
                 mode = "start"
 
             # Set delivery
             elif event.key == pygame.K_2:
+
                 mode = "goal"
 
             # Set/remove obstacles
             elif event.key == pygame.K_3:
+
                 mode = "obstacle"
+
+            # Run A*
+            elif event.key == pygame.K_SPACE:
+
+                if start is not None and goal is not None:
+
+                    path = a_star(start, goal)
 
             # Reset
             elif event.key == pygame.K_r:
+
                 blocked_cells.clear()
+
                 start = None
                 goal = None
+
+                path = []
 
         # Mouse
         elif event.type == pygame.MOUSEBUTTONDOWN:
@@ -125,9 +243,6 @@ while running:
             col = mouse_x // CELL_SIZE
 
             cell = (row, col)
-            if start is not None:
-                print("Start:", start)
-                print("Neighbors:", get_neighbors(start))
 
             # -------------------------
             # Start / Depot
@@ -138,6 +253,8 @@ while running:
                 start = cell
                 blocked_cells.discard(cell)
 
+                path = []
+
             # -------------------------
             # Goal / Delivery
             # -------------------------
@@ -146,6 +263,8 @@ while running:
 
                 goal = cell
                 blocked_cells.discard(cell)
+
+                path = []
 
             # -------------------------
             # Obstacles
@@ -156,10 +275,14 @@ while running:
                 if cell != start and cell != goal:
 
                     if cell in blocked_cells:
+
                         blocked_cells.remove(cell)
 
                     else:
+
                         blocked_cells.add(cell)
+
+                    path = []
 
     # -----------------------------
     # Draw grid
@@ -182,6 +305,15 @@ while running:
                 pygame.draw.rect(
                     screen,
                     GRAY,
+                    (x, y, CELL_SIZE, CELL_SIZE)
+                )
+
+            # Final path
+            elif cell in path:
+
+                pygame.draw.rect(
+                    screen,
+                    YELLOW,
                     (x, y, CELL_SIZE, CELL_SIZE)
                 )
 
