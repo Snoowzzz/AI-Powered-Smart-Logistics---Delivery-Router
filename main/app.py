@@ -38,6 +38,19 @@ CELL_SIZE = WIDTH // COLS
 
 
 # -----------------------------
+# Road cells
+# -----------------------------
+
+road_cells = {
+    (20, 15),
+    (20, 16),
+    (20, 17),
+    (20, 18),
+    (20, 19),
+}
+
+
+# -----------------------------
 # Main loop
 # -----------------------------
 
@@ -54,11 +67,13 @@ while running:
         if event.type == pygame.QUIT:
             running = False
 
+
     # -------------------------
     # Draw map
     # -------------------------
 
     screen.blit(map_image, (0, 0))
+
 
     # -------------------------
     # Draw grid
@@ -71,12 +86,32 @@ while running:
             x = col * CELL_SIZE
             y = row * CELL_SIZE
 
+            cell = (row, col)
+
+            # -------------------------
+            # Road cell
+            # -------------------------
+
+            if cell in road_cells:
+
+                pygame.draw.rect(
+                    screen,
+                    (0, 255, 0),
+                    (x, y, CELL_SIZE, CELL_SIZE)
+                )
+
+
+            # -------------------------
+            # Grid line
+            # -------------------------
+
             pygame.draw.rect(
                 screen,
                 (60, 60, 60),
                 (x, y, CELL_SIZE, CELL_SIZE),
                 1
             )
+
 
     pygame.display.flip()
 
