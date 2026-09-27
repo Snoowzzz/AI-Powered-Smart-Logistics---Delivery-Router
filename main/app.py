@@ -41,13 +41,89 @@ CELL_SIZE = WIDTH // COLS
 # Road cells
 # -----------------------------
 
-road_cells = {
-    (20, 15),
-    (20, 16),
-    (20, 17),
-    (20, 18),
-    (20, 19),
-}
+road_cells = set()
+
+
+# -----------------------------
+# Horizontal road
+# -----------------------------
+
+for col in range(8, 32):
+    road_cells.add((20, col))
+
+
+# -----------------------------
+# Vertical road
+# -----------------------------
+
+for row in range(10, 31):
+    road_cells.add((row, 20))
+
+
+# -----------------------------
+# Diagonal road
+# -----------------------------
+# This demonstrates that roads
+# can change direction.
+
+for i in range(8):
+    road_cells.add((12 + i, 12 + i))
+
+
+# -----------------------------
+# Movement directions
+# -----------------------------
+# 8 possible directions
+
+directions = [
+    (-1, -1),   # Up-left
+    (-1,  0),   # Up
+    (-1,  1),   # Up-right
+    ( 0, -1),   # Left
+    ( 0,  1),   # Right
+    ( 1, -1),   # Down-left
+    ( 1,  0),   # Down
+    ( 1,  1),   # Down-right
+]
+
+
+# -----------------------------
+# Get neighbors
+# -----------------------------
+
+def get_neighbors(cell):
+
+    row, col = cell
+
+    neighbors = []
+
+    for dr, dc in directions:
+
+        new_row = row + dr
+        new_col = col + dc
+
+        new_cell = (new_row, new_col)
+
+        # Stay inside the grid
+        if not (0 <= new_row < ROWS):
+            continue
+
+        if not (0 <= new_col < COLS):
+            continue
+
+        # Only roads can be visited
+        if new_cell not in road_cells:
+            continue
+
+        # Calculate movement cost
+        if dr != 0 and dc != 0:
+            cost = 1.414
+        else:
+            cost = 1
+
+        neighbors.append((new_cell, cost))
+
+    return neighbors
 
 
 # -----------------------------
@@ -99,7 +175,6 @@ while running:
                     (0, 255, 0),
                     (x, y, CELL_SIZE, CELL_SIZE)
                 )
-
 
             # -------------------------
             # Grid line
