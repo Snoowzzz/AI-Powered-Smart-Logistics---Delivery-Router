@@ -1,477 +1,898 @@
 import pygame
 import heapq
+import math
+import time
 
 pygame.init()
 
-# -----------------------------
-# Window / Grid
-# -----------------------------
+
+# ============================================================
+# WINDOW
+# ============================================================
 
 WIDTH = 800
 HEIGHT = 800
-
-ROWS = 20
-COLS = 20
-
-CELL_SIZE = WIDTH // COLS
 
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
 pygame.display.set_caption("AI Smart Logistics Router")
 
 clock = pygame.time.Clock()
 
-
-# -----------------------------
-# Grid state
-# -----------------------------
-
-blocked_cells = set()
-
-start = None
-goal = None
-
-path = []
-explored = set()
-
-mode = "obstacle"
+font = pygame.font.SysFont("Arial", 20)
+small_font = pygame.font.SysFont("Arial", 15)
 
 
-# -----------------------------
-# A* animation state
-# -----------------------------
+# ============================================================
+# MAP
+# ============================================================
 
-searching = False
-search_finished = False
+map_image = pygame.image.load("PUBG_Mobile_Livik.jpg")
 
-open_heap = []
-came_from = {}
-g_score = {}
-
-search_start = None
-search_goal = None
+map_image = pygame.transform.scale(
+    map_image,
+    (WIDTH, HEIGHT)
+)
 
 
-# -----------------------------
-# Colors
-# -----------------------------
+# ============================================================
+# GRID
+# ============================================================
 
-WHITE = (255, 255, 255)
-BLACK = (0, 0, 0)
-GRAY = (100, 100, 100)
+ROWS = 40
+COLS = 40
 
-GREEN = (0, 200, 0)
-RED = (200, 0, 0)
-
-BLUE = (100, 180, 255)
-YELLOW = (255, 200, 0)
+CELL_SIZE = WIDTH // COLS
 
 
-# -----------------------------
-# Find valid neighboring cells
-# -----------------------------
+# ============================================================
+# REAL WORLD SCALE
+# ============================================================
+
+MAP_SIZE_KM = 2.0
+
+CELL_SIZE_KM = MAP_SIZE_KM / COLS
+
+
+# ============================================================
+# ROAD MASK
+# ============================================================
+
+road_mask = [
+    ".............................#######....",
+    ".........###............#####..#....#...",
+    "......###...###...######..#.....#....#..",
+    ".....#.........####..#.....###...#...##.",
+    "....#..........#.....#........#..#....##",
+    "....#..........#......#........#.##....#",
+    "...#...........#.....#.........##..#...#",
+    "...#........####.....#..........#..#...#",
+    "...##....###....#....#...........#.###.#",
+    ".....##.##.......#...#............#...#.",
+    ".......##........#....#...............#.",
+    ".........#.......#....#...............#.",
+    ".........#........#....#..............#.",
+    "........#.........#....#####.........##.",
+    "........#.........#......#..#.......##..",
+    ".......###........#......#..##......#...",
+    "......#.#.#......##......#...###...#....",
+    "....##..##.######..#....#.......###.....",
+    "...##.....#....#....#..#......##........",
+    "...####........#.....######.##..........",
+    "...#...#.......#......#....#.##.........",
+    "...#...##......#.......####...#.........",
+    "...#....##....##...............#........",
+    "...#.....##.##.#...............#........",
+    "...#......##...#####......#####.#.......",
+    "..#.#.....#.....#..#.....##.....##......",
+    "...###....#.....#...#...##........#.....",
+    "...#.##..##.....#...#####.......####....",
+    "..#...#..#......#...............#..##...",
+    ".#....#..#.......##............##...##..",
+    ".#.....#..#.....#.###.........#......#..",
+    "..#.....####....#...##......##.......#..",
+    "..#......#..####......#...###........#..",
+    "...#.....#......#......###...........#..",
+    "...#...##.......#.......#...........##..",
+    "....####........#.......#..........##...",
+    "................#........###########....",
+    ".............###........................",
+    "........................................",
+    "........................................",
+]
+
+
+# ============================================================
+# CREATE ROAD CELL SET
+# ============================================================
+
+road_cells = set()
+
+for row in range(ROWS):
+
+    for col in range(COLS):
+
+        if road_mask[row][col] == "#":
+
+            road_cells.add((row, col))
+
+
+# ============================================================
+# A* MOVEMENT
+# ============================================================
+
+directions = [
+    (-1, -1),
+    (-1,  0),
+    (-1,  1),
+
+    ( 0, -1),
+    ( 0,  1),
+
+    ( 1, -1),
+    ( 1,  0),
+    ( 1,  1),
+]
+
 
 def get_neighbors(cell):
 
     row, col = cell
 
-    possible_neighbors = [
-        (row - 1, col),  # up
-        (row + 1, col),  # down
-        (row, col - 1),  # left
-        (row, col + 1)   # right
-    ]
+    neighbors = []
 
-    valid_neighbors = []
+    for dr, dc in directions:
 
-    for neighbor in possible_neighbors:
+        new_row = row + dr
+        new_col = col + dc
 
-        n_row, n_col = neighbor
+        new_cell = (new_row, new_col)
 
-        # Check if inside grid
-        if n_row < 0 or n_row >= ROWS:
+        # Stay inside grid
+        if not (0 <= new_row < ROWS):
             continue
 
-        if n_col < 0 or n_col >= COLS:
+        if not (0 <= new_col < COLS):
             continue
 
-        # Check if blocked
-        if neighbor in blocked_cells:
+        # Must be a road
+        if new_cell not in road_cells:
             continue
 
-        valid_neighbors.append(neighbor)
+        # Straight movement
+        if dr == 0 or dc == 0:
 
-    return valid_neighbors
+            cost = 1.0
+
+        # Diagonal movement
+        else:
+
+            cost = math.sqrt(2)
+
+        neighbors.append(
+            (new_cell, cost)
+        )
+
+    return neighbors
 
 
-# -----------------------------
-# Manhattan heuristic
-# -----------------------------
+# ============================================================
+# HEURISTIC
+# ============================================================
 
 def heuristic(a, b):
 
-    return abs(a[0] - b[0]) + abs(a[1] - b[1])
+    row1, col1 = a
+    row2, col2 = b
+
+    return math.sqrt(
+        (row2 - row1) ** 2
+        +
+        (col2 - col1) ** 2
+    )
 
 
-# -----------------------------
-# Reconstruct final path
-# -----------------------------
+# ============================================================
+# A* STATE
+# ============================================================
 
-def reconstruct_path(came_from, current):
+open_heap = []
 
-    result = [current]
+came_from = {}
 
-    while current in came_from:
+g_score = {}
 
-        current = came_from[current]
-        result.append(current)
+start = None
+goal = None
 
-    result.reverse()
+current = None
 
-    return result
+closed_set = set()
+open_set = set()
+
+final_path = []
+
+path_index = 0
+
+searching = False
+path_animation = False
+finished = False
+
+last_step_time = 0
+
+# Smaller = faster
+SEARCH_DELAY = 0.08
+PATH_DELAY = 0.05
 
 
-# -----------------------------
-# Start A* search
-# -----------------------------
+# ============================================================
+# START A* SEARCH
+# ============================================================
 
-def start_a_star():
+def start_search(start_cell, goal_cell):
 
-    global searching
-    global search_finished
     global open_heap
     global came_from
     global g_score
-    global explored
-    global path
-    global search_start
-    global search_goal
+    global closed_set
+    global open_set
+    global current
+    global final_path
+    global path_index
+    global searching
+    global path_animation
+    global finished
+    global last_step_time
 
-    if start is None or goal is None:
-        return
+    start = start_cell
 
-    searching = True
-    search_finished = False
-
-    path = []
-    explored = set()
-
+    # Reset everything
     open_heap = []
+
     came_from = {}
 
     g_score = {
-        start: 0
+        start_cell: 0.0
     }
 
-    search_start = start
-    search_goal = goal
+    closed_set = set()
+
+    open_set = {
+        start_cell
+    }
+
+    final_path = []
+
+    path_index = 0
+
+    current = None
+
+    searching = True
+    path_animation = False
+    finished = False
+
+    last_step_time = time.time()
+
+    first_f = heuristic(
+        start_cell,
+        goal_cell
+    )
 
     heapq.heappush(
         open_heap,
         (
-            heuristic(start, goal),
-            start
+            first_f,
+            0.0,
+            start_cell
         )
     )
 
 
-# -----------------------------
-# Perform one A* step
-# -----------------------------
+# ============================================================
+# RECONSTRUCT PATH
+# ============================================================
 
-def a_star_step():
+def reconstruct_path():
 
+    global final_path
+    global path_index
+
+    path = []
+
+    current_node = goal
+
+    path.append(current_node)
+
+    while current_node in came_from:
+
+        current_node = came_from[current_node]
+
+        path.append(current_node)
+
+    path.reverse()
+
+    final_path = path
+
+    path_index = 0
+
+
+# ============================================================
+# ONE A* SEARCH STEP
+# ============================================================
+
+def astar_step():
+
+    global current
     global searching
-    global search_finished
-    global path
+    global path_animation
+    global finished
 
-    # Nothing to do
-    if not searching:
-        return
-
-    # No more cells to explore
+    # Nothing left to search
     if not open_heap:
 
         searching = False
-        search_finished = True
+        finished = True
 
         return
 
-    # Get best cell
-    current_f, current = heapq.heappop(open_heap)
+    # Get best node
+    f_score, current_g, current_node = heapq.heappop(
+        open_heap
+    )
 
-    # Ignore already explored cells
-    if current in explored:
+    # Ignore outdated heap entries
+    if current_g != g_score.get(
+        current_node,
+        float("inf")
+    ):
+
+        return
+
+    # Remove from open set
+    open_set.discard(current_node)
+
+    current = current_node
+
+    # Goal found
+    if current_node == goal:
+
+        searching = False
+
+        reconstruct_path()
+
+        path_animation = True
 
         return
 
     # Mark as explored
-    explored.add(current)
+    closed_set.add(current_node)
 
-    # Goal reached
-    if current == search_goal:
+    # Explore neighbors
+    for neighbor, movement_cost in get_neighbors(
+        current_node
+    ):
 
-        path = reconstruct_path(
-            came_from,
-            current
+        # Don't revisit closed nodes
+        if neighbor in closed_set:
+            continue
+
+        tentative_g = (
+            g_score[current_node]
+            +
+            movement_cost
         )
 
-        searching = False
-        search_finished = True
-
-        return
-
-    # Check neighbors
-    for neighbor in get_neighbors(current):
-
-        tentative_g = g_score[current] + 1
-
-        if tentative_g < g_score.get(
-            neighbor,
-            float("inf")
+        # Better route to neighbor
+        if (
+            neighbor not in g_score
+            or
+            tentative_g < g_score[neighbor]
         ):
 
-            came_from[neighbor] = current
+            came_from[neighbor] = current_node
 
             g_score[neighbor] = tentative_g
 
-            f_score = (
-                tentative_g
-                + heuristic(
-                    neighbor,
-                    search_goal
-                )
+            h = heuristic(
+                neighbor,
+                goal
             )
+
+            f = tentative_g + h
 
             heapq.heappush(
                 open_heap,
                 (
-                    f_score,
+                    f,
+                    tentative_g,
                     neighbor
                 )
             )
 
-
-# -----------------------------
-# Reset search
-# -----------------------------
-
-def reset_search():
-
-    global searching
-    global search_finished
-    global path
-    global explored
-    global open_heap
-    global came_from
-    global g_score
-
-    searching = False
-    search_finished = False
-
-    path = []
-    explored = set()
-
-    open_heap = []
-    came_from = {}
-    g_score = {}
+            open_set.add(neighbor)
 
 
-# -----------------------------
-# Main loop
-# -----------------------------
+# ============================================================
+# DRAW CELL
+# ============================================================
+
+def draw_cell(
+    cell,
+    color,
+    padding=2
+):
+
+    row, col = cell
+
+    x = col * CELL_SIZE
+    y = row * CELL_SIZE
+
+    pygame.draw.rect(
+        screen,
+        color,
+        (
+            x + padding,
+            y + padding,
+            CELL_SIZE - padding * 2,
+            CELL_SIZE - padding * 2
+        )
+    )
+
+
+# ============================================================
+# DRAW TEXT
+# ============================================================
+
+def draw_text(
+    text,
+    position,
+    text_font
+):
+
+    surface = text_font.render(
+        text,
+        True,
+        (255, 255, 255)
+    )
+
+    screen.blit(
+        surface,
+        position
+    )
+
+
+# ============================================================
+# MAIN LOOP
+# ============================================================
 
 running = True
 
 while running:
 
-    # -------------------------
-    # Events
-    # -------------------------
+    # ========================================================
+    # EVENTS
+    # ========================================================
 
     for event in pygame.event.get():
 
-        # Quit
         if event.type == pygame.QUIT:
 
             running = False
 
-        # Keyboard
-        elif event.type == pygame.KEYDOWN:
 
-            # Set depot
-            if event.key == pygame.K_1:
+        elif event.type == pygame.MOUSEBUTTONDOWN:
 
-                if not searching:
+            # ------------------------------------------------
+            # RIGHT CLICK = RESET
+            # ------------------------------------------------
 
-                    mode = "start"
-
-            # Set delivery
-            elif event.key == pygame.K_2:
-
-                if not searching:
-
-                    mode = "goal"
-
-            # Set obstacles
-            elif event.key == pygame.K_3:
-
-                if not searching:
-
-                    mode = "obstacle"
-
-            # Start A*
-            elif event.key == pygame.K_SPACE:
-
-                if start is not None and goal is not None:
-
-                    start_a_star()
-
-            # Reset
-            elif event.key == pygame.K_r:
-
-                blocked_cells.clear()
+            if event.button == 3:
 
                 start = None
                 goal = None
 
-                reset_search()
+                current = None
 
-        # Mouse
-        elif event.type == pygame.MOUSEBUTTONDOWN:
+                open_heap = []
 
-            # Don't modify map during search
-            if searching:
+                came_from = {}
+
+                g_score = {}
+
+                open_set = set()
+
+                closed_set = set()
+
+                final_path = []
+
+                path_index = 0
+
+                searching = False
+                path_animation = False
+                finished = False
+
                 continue
 
-            mouse_x, mouse_y = event.pos
 
-            row = mouse_y // CELL_SIZE
-            col = mouse_x // CELL_SIZE
+            # ------------------------------------------------
+            # LEFT CLICK
+            # ------------------------------------------------
 
-            cell = (row, col)
+            if event.button == 1:
 
-            # -------------------------
-            # Start / Depot
-            # -------------------------
+                # Don't allow new selections while searching
+                if searching or path_animation:
+                    continue
 
-            if mode == "start":
+                mouse_x, mouse_y = event.pos
 
-                start = cell
+                row = mouse_y // CELL_SIZE
+                col = mouse_x // CELL_SIZE
 
-                blocked_cells.discard(cell)
+                clicked_cell = (
+                    row,
+                    col
+                )
 
-                reset_search()
+                # Check grid
+                if not (
+                    0 <= row < ROWS
+                    and
+                    0 <= col < COLS
+                ):
 
-            # -------------------------
-            # Goal / Delivery
-            # -------------------------
+                    continue
 
-            elif mode == "goal":
+                # Must be road
+                if clicked_cell not in road_cells:
 
-                goal = cell
+                    continue
 
-                blocked_cells.discard(cell)
+                # ------------------------------------------------
+                # FIRST CLICK
+                # ------------------------------------------------
 
-                reset_search()
+                if start is None:
 
-            # -------------------------
-            # Obstacles
-            # -------------------------
+                    start = clicked_cell
 
-            elif mode == "obstacle":
+                    goal = None
 
-                if cell != start and cell != goal:
+                    final_path = []
 
-                    if cell in blocked_cells:
+                    finished = False
 
-                        blocked_cells.remove(cell)
+                # ------------------------------------------------
+                # SECOND CLICK
+                # ------------------------------------------------
 
-                    else:
+                elif goal is None:
 
-                        blocked_cells.add(cell)
+                    goal = clicked_cell
 
-                    reset_search()
+                    start_search(
+                        start,
+                        goal
+                    )
 
-    # -----------------------------
-    # Perform A* step
-    # -----------------------------
+                # ------------------------------------------------
+                # THIRD CLICK
+                # ------------------------------------------------
+
+                else:
+
+                    start = clicked_cell
+
+                    goal = None
+
+                    final_path = []
+
+                    finished = False
+
+
+    # ========================================================
+    # ANIMATE A* SEARCH
+    # ========================================================
+
+    current_time = time.time()
 
     if searching:
 
-        a_star_step()
+        if (
+            current_time - last_step_time
+            >= SEARCH_DELAY
+        ):
 
-    # -----------------------------
-    # Draw grid
-    # -----------------------------
+            astar_step()
 
-    screen.fill(WHITE)
+            last_step_time = current_time
+
+
+    # ========================================================
+    # ANIMATE FINAL PATH
+    # ========================================================
+
+    if path_animation:
+
+        if (
+            current_time - last_step_time
+            >= PATH_DELAY
+        ):
+
+            path_index += 1
+
+            last_step_time = current_time
+
+            if path_index >= len(final_path):
+
+                path_index = len(final_path)
+
+                path_animation = False
+
+                finished = True
+
+
+    # ========================================================
+    # DRAW MAP
+    # ========================================================
+
+    screen.blit(
+        map_image,
+        (0, 0)
+    )
+
+
+    # ========================================================
+    # DRAW ROAD CELLS
+    # ========================================================
 
     for row in range(ROWS):
 
         for col in range(COLS):
 
-            cell = (row, col)
-
-            x = col * CELL_SIZE
-            y = row * CELL_SIZE
-
-            # Obstacle
-            if cell in blocked_cells:
-
-                pygame.draw.rect(
-                    screen,
-                    GRAY,
-                    (x, y, CELL_SIZE, CELL_SIZE)
-                )
-
-            # Final path
-            elif cell in path:
-
-                pygame.draw.rect(
-                    screen,
-                    YELLOW,
-                    (x, y, CELL_SIZE, CELL_SIZE)
-                )
-
-            # Explored cells
-            elif cell in explored:
-
-                pygame.draw.rect(
-                    screen,
-                    BLUE,
-                    (x, y, CELL_SIZE, CELL_SIZE)
-                )
-
-            # Depot
-            elif cell == start:
-
-                pygame.draw.rect(
-                    screen,
-                    GREEN,
-                    (x, y, CELL_SIZE, CELL_SIZE)
-                )
-
-            # Delivery
-            elif cell == goal:
-
-                pygame.draw.rect(
-                    screen,
-                    RED,
-                    (x, y, CELL_SIZE, CELL_SIZE)
-                )
-
-            # Grid lines
-            pygame.draw.rect(
-                screen,
-                BLACK,
-                (x, y, CELL_SIZE, CELL_SIZE),
-                1
+            cell = (
+                row,
+                col
             )
+
+            if cell in road_cells:
+
+                # Keep current red road debugging layer
+                draw_cell(
+                    cell,
+                    (220, 60, 60),
+                    1
+                )
+
+
+    # ========================================================
+    # DRAW OPEN SET
+    # ========================================================
+
+    for cell in open_set:
+
+        if cell != start and cell != goal:
+
+            draw_cell(
+                cell,
+                (40, 150, 255),
+                4
+            )
+
+
+    # ========================================================
+    # DRAW CLOSED SET
+    # ========================================================
+
+    for cell in closed_set:
+
+        if cell != start and cell != goal:
+
+            draw_cell(
+                cell,
+                (150, 80, 180),
+                4
+            )
+
+
+    # ========================================================
+    # DRAW CURRENT CELL
+    # ========================================================
+
+    if current is not None:
+
+        if (
+            current != start
+            and
+            current != goal
+        ):
+
+            draw_cell(
+                current,
+                (255, 165, 0),
+                3
+            )
+
+
+    # ========================================================
+    # DRAW ANIMATED FINAL PATH
+    # ========================================================
+
+    if final_path:
+
+        visible_path = final_path[
+            :path_index + 1
+        ]
+
+        for cell in visible_path:
+
+            if (
+                cell != start
+                and
+                cell != goal
+            ):
+
+                draw_cell(
+                    cell,
+                    (255, 230, 0),
+                    3
+                )
+
+
+    # ========================================================
+    # DRAW START
+    # ========================================================
+
+    if start is not None:
+
+        draw_cell(
+            start,
+            (0, 170, 255),
+            2
+        )
+
+
+    # ========================================================
+    # DRAW GOAL
+    # ========================================================
+
+    if goal is not None:
+
+        draw_cell(
+            goal,
+            (255, 70, 70),
+            2
+        )
+
+
+    # ========================================================
+    # STATUS BAR
+    # ========================================================
+
+    pygame.draw.rect(
+        screen,
+        (20, 20, 20),
+        (
+            0,
+            760,
+            WIDTH,
+            40
+        )
+    )
+
+
+    # --------------------------------------------------------
+    # STATUS MESSAGE
+    # --------------------------------------------------------
+
+    if start is None:
+
+        status = (
+            "Click a ROAD cell for START"
+        )
+
+    elif goal is None:
+
+        status = (
+            "Click a ROAD cell for DESTINATION"
+        )
+
+    elif searching:
+
+        status = (
+            "A* is searching..."
+        )
+
+    elif path_animation:
+
+        status = (
+            "Route found — building route..."
+        )
+
+    elif finished:
+
+        status = (
+            "Route complete! "
+            "Right-click to reset."
+        )
+
+    else:
+
+        status = ""
+
+
+    draw_text(
+        status,
+        (10, 768),
+        small_font
+    )
+
+
+    # ========================================================
+    # SEARCH STATISTICS
+    # ========================================================
+
+    explored = len(closed_set)
+
+    frontier = len(open_set)
+
+    if final_path:
+
+        distance_cells = 0
+
+        for i in range(1, len(final_path)):
+
+            r1, c1 = final_path[i - 1]
+            r2, c2 = final_path[i]
+
+            dr = abs(r2 - r1)
+            dc = abs(c2 - c1)
+
+            if dr == 1 and dc == 1:
+
+                distance_cells += math.sqrt(2)
+
+            else:
+
+                distance_cells += 1
+
+
+        distance_km = (
+            distance_cells
+            * CELL_SIZE_KM
+        )
+
+        distance_m = (
+            distance_km
+            * 1000
+        )
+
+        stats = (
+            f"Explored: {explored}   "
+            f"Route: {distance_m:.0f} m"
+        )
+
+    else:
+
+        stats = (
+            f"Explored: {explored}   "
+            f"Open: {frontier}"
+        )
+
+
+    draw_text(
+        stats,
+        (520, 768),
+        small_font
+    )
+
+
+    # ========================================================
+    # DISPLAY
+    # ========================================================
 
     pygame.display.flip()
 
-    # Lower FPS makes the search easier to see
-    clock.tick(15)
+    clock.tick(60)
 
 
 pygame.quit()
