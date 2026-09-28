@@ -28,8 +28,8 @@ map_image = pygame.transform.scale(map_image, (WIDTH, MAP_HEIGHT))
 # 20 x 20 grid
 # ------------------------------------------------------------
 
-ROWS = 20
-COLS = 20
+ROWS = 40
+COLS = 40
 CELL_SIZE = WIDTH // COLS
 
 # Cells manually marked as NON-ROAD
