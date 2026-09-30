@@ -106,6 +106,25 @@ weak_cells = load_mask(WEAK_MASK_FILE)
 # A* can currently travel on either type.
 # We will introduce different travel costs later.
 road_cells = highway_cells | weak_cells
+print("Highway cells:", len(highway_cells))
+print("Weak road cells:", len(weak_cells))
+print("Total road cells:", len(road_cells))
+
+touching_weak = 0
+
+for r, c in weak_cells:
+    for dr, dc in [
+        (-1, -1), (-1, 0), (-1, 1),
+        (0, -1),           (0, 1),
+        (1, -1),  (1, 0),  (1, 1)
+    ]:
+        neighbor = (r + dr, c + dc)
+
+        if neighbor in highway_cells:
+            touching_weak += 1
+            break
+
+print("Weak-road cells connected to highway:", touching_weak)
 
 # ============================================================
 # NAMED LOCATIONS
@@ -276,9 +295,16 @@ def get_neighbors(cell):
             continue
 
         if dr == 0 or dc == 0:
-            cost = 1.0
+            geometric_cost = 1.0
         else:
-            cost = math.sqrt(2)
+            geometric_cost = math.sqrt(2)
+
+        if new_cell in highway_cells:
+            road_multiplier = 1.0
+        elif new_cell in weak_cells:
+            road_multiplier = 1.25
+
+        cost = geometric_cost * road_multiplier
 
         neighbors.append(
             (new_cell, cost)
