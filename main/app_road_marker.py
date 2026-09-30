@@ -1,10 +1,11 @@
 import pygame
+from pathlib import Path
 
 pygame.init()
 
 # ============================================================
 # AI SMART LOGISTICS ROUTER
-# v0.8 - 80x80 Road Network Refinement
+# v0.8.2 - Highway + Weak/Muddy Road Marking (No Grid)
 # ============================================================
 
 WIDTH = 800
@@ -13,177 +14,152 @@ HUD_HEIGHT = 60
 HEIGHT = MAP_HEIGHT + HUD_HEIGHT
 
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
-pygame.display.set_caption(
-    "AI Smart Logistics Router - 80x80 Road Refinement"
-)
+pygame.display.set_caption("AI Smart Logistics Router - Road Network Marking (No Grid)")
 
 clock = pygame.time.Clock()
-
-font = pygame.font.SysFont(None, 22)
-small_font = pygame.font.SysFont(None, 17)
 
 # ============================================================
 # MAP
 # ============================================================
 
 map_image = pygame.image.load("PUBG_Mobile_Livik.jpg")
-
-map_image = pygame.transform.scale(
-    map_image,
-    (WIDTH, MAP_HEIGHT)
-)
+map_image = pygame.transform.scale(map_image, (WIDTH, MAP_HEIGHT))
 
 # ============================================================
-# GRID
+# 80 x 80 GRID
 # ============================================================
 
 ROWS = 80
 COLS = 80
-
 CELL_SIZE = WIDTH // COLS
 
 # ============================================================
-# ORIGINAL 40x40 ROAD MASK
-# ============================================================
-#
-# This is the existing road network from v0.6.
-#
-# # = ROAD
-# . = NON-ROAD
-#
-# We will automatically expand this to 80x80.
+# FILES
 # ============================================================
 
-old_road_mask = [
-    ".............................#######....",
-    ".........###............#####..#....#...",
-    "......###...###...######..#.....#....#..",
-    ".....#.........####..#.....###...#...##.",
-    "....#..........#.....#........#..#....##",
-    "....#..........#......#........#.##....#",
-    "...#...........#.....#.........##..#...#",
-    "...#........####.....#..........#..#...#",
-    "...##....###....#....#...........#.###.#",
-    ".....##.##.......#...#............#...#.",
-    ".......##........#....#...............#.",
-    ".........#.......#....#...............#.",
-    ".........#........#....#..............#.",
-    "........#.........#....#####.........##.",
-    "........#.........#......#..#.......##..",
-    ".......###........#......#..##......#...",
-    "......#.#.#......##......#...###...#....",
-    "....##..##.######..#....#.......###.....",
-    "...##.....#....#....#..#......##........",
-    "...####........#.....######.##..........",
-    "...#...#.......#......#....#.##.........",
-    "...#...##......#.......####...#.........",
-    "...#....##....##...............#........",
-    "...#.....##.##.#...............#........",
-    "...#......##...#####......#####.#.......",
-    "..#.#.....#.....#..#.....##.....##......",
-    "...###....#.....#...#...##........#.....",
-    "...#.##..##.....#...#####.......####....",
-    "..#...#..#......#...............#..##...",
-    ".#....#..#.......##............##...##..",
-    ".#.....#..#.....#.###.........#......#..",
-    "..#.....####....#...##......##.......#..",
-    "..#......#..####......#...###........#..",
-    "...#.....#......#......###...........#..",
-    "...#...##.......#.......#...........##..",
-    "....####........#.......#..........##...",
-    "................#........###########....",
-    ".............###........................",
-    "........................................",
-    "........................................",
-]
+HIGHWAY_MASK_FILE = "road_mask_80x80.txt"
+WEAK_MASK_FILE = "weak_road_mask_80x80.txt"
 
 # ============================================================
-# CHECK ORIGINAL MASK
+# COLORS
 # ============================================================
 
-if len(old_road_mask) != 40:
-    raise ValueError(
-        f"Expected 40 rows, found {len(old_road_mask)}"
-    )
+HIGHWAY_COLOR = (220, 60, 60)       # Red
+WEAK_COLOR = (210, 150, 40)         # Orange/brown
+GRID_COLOR = (0, 0, 0)
+HUD_COLOR = (20, 20, 20)
+WHITE = (255, 255, 255)
+LIGHT_TEXT = (210, 210, 210)
 
-for row_number, row in enumerate(old_road_mask):
+# ============================================================
+# FONTS
+# ============================================================
 
-    if len(row) != 40:
-        raise ValueError(
-            f"Row {row_number} has {len(row)} cells instead of 40."
+font = pygame.font.SysFont(None, 22)
+small_font = pygame.font.SysFont(None, 18)
+
+# ============================================================
+# ROAD NETWORK
+# ============================================================
+# Highway mask is loaded from the finished 80x80 network.
+# Weak/muddy roads start empty and will be painted manually.
+# '#' = road
+# '.' = non-road
+# ============================================================
+
+
+def load_mask(filename):
+    """Load an 80x80 road mask from a text file."""
+
+    path = Path(filename)
+
+    if not path.exists():
+        print(f"ERROR: Could not find {filename}")
+        pygame.quit()
+        raise SystemExit
+
+    with path.open("r", encoding="utf-8") as file:
+        rows = [line.rstrip("\n\r") for line in file]
+
+    if len(rows) != ROWS:
+        print(
+            f"ERROR: {filename} must contain {ROWS} rows, "
+            f"but contains {len(rows)}."
         )
+        pygame.quit()
+        raise SystemExit
 
-# ============================================================
-# CREATE 80x80 ROAD MASK
-# ============================================================
-#
-# Every original 40x40 cell becomes a 2x2 group.
-#
-# Example:
-#
-# 40x40:
-#
-#   .#.
-#   .##
-#
-# becomes:
-#
-# 80x80:
-#
-#   ..##
-#   ..##
-#   ..####
-#   ..####
-#
-# This preserves the existing road network while giving
-# us twice the resolution in each direction.
-# ============================================================
-
-road_mask = []
-
-for old_row in old_road_mask:
-
-    expanded_row = ""
-
-    for value in old_row:
-
-        if value == "#":
-
-            expanded_row += "##"
-
-        else:
-
-            expanded_row += ".."
-
-    # Each original row becomes two identical rows.
-    road_mask.append(expanded_row)
-    road_mask.append(expanded_row)
-
-# ============================================================
-# CREATE ROAD CELL SET
-# ============================================================
-
-road_cells = set()
-
-for row in range(ROWS):
-
-    for col in range(COLS):
-
-        if road_mask[row][col] == "#":
-
-            road_cells.add(
-                (row, col)
+    for index, row in enumerate(rows):
+        if len(row) != COLS:
+            print(
+                f"ERROR: Row {index + 1} of {filename} must contain "
+                f"{COLS} characters, but contains {len(row)}."
             )
+            pygame.quit()
+            raise SystemExit
+
+        if any(char not in ".#" for char in row):
+            print(
+                f"ERROR: Row {index + 1} of {filename} contains "
+                "characters other than '.' and '#'."
+            )
+            pygame.quit()
+            raise SystemExit
+
+    return {
+        (row, col)
+        for row in range(ROWS)
+        for col in range(COLS)
+        if rows[row][col] == "#"
+    }
+
+
+def save_mask(filename, cells):
+    """Save a cell set as an 80x80 '#' / '.' mask."""
+
+    lines = []
+
+    for row in range(ROWS):
+        line = ""
+
+        for col in range(COLS):
+            line += "#" if (row, col) in cells else "."
+
+        lines.append(line)
+
+    with open(filename, "w", encoding="utf-8") as file:
+        file.write("\n".join(lines))
+
+    print(f"Saved {filename}")
+
+
+# Load the finished highway network.
+highway_cells = load_mask(HIGHWAY_MASK_FILE)
+
+# Weak/muddy roads start empty.
+weak_cells = set()
 
 # ============================================================
-# MOUSE → CELL
+# EDIT MODE
 # ============================================================
+# 1 = HIGHWAY MODE
+# 2 = WEAK / MUDDY ROAD MODE
+# ============================================================
+
+EDIT_HIGHWAY = 1
+EDIT_WEAK = 2
+edit_mode = EDIT_HIGHWAY
+
+# ============================================================
+# MOUSE -> CELL
+# ============================================================
+
 
 def mouse_to_cell(position):
+    """Convert mouse position into (row, col)."""
 
     x, y = position
 
-    # Ignore bottom HUD
     if y >= MAP_HEIGHT:
         return None
 
@@ -191,85 +167,25 @@ def mouse_to_cell(position):
     row = y // CELL_SIZE
 
     if 0 <= row < ROWS and 0 <= col < COLS:
-
         return row, col
 
     return None
 
 
 # ============================================================
-# TOGGLE ROAD
+# SAVE EVERYTHING
 # ============================================================
 
-def toggle_road(cell):
 
-    if cell in road_cells:
+def save_all():
 
-        road_cells.remove(cell)
+    save_mask(HIGHWAY_MASK_FILE, highway_cells)
+    save_mask(WEAK_MASK_FILE, weak_cells)
 
-    else:
+    screenshot_name = "Livik_80x80_Road_Network.png"
+    pygame.image.save(screen, screenshot_name)
 
-        road_cells.add(cell)
-
-
-# ============================================================
-# SAVE 80x80 MASK
-# ============================================================
-
-def save_mask():
-
-    filename = "road_mask_80x80.txt"
-
-    with open(filename, "w") as file:
-
-        for row in range(ROWS):
-
-            row_string = ""
-
-            for col in range(COLS):
-
-                if (row, col) in road_cells:
-
-                    row_string += "#"
-
-                else:
-
-                    row_string += "."
-
-            file.write(row_string + "\n")
-
-    print(
-        f"Saved 80x80 road mask as {filename}"
-    )
-
-
-# ============================================================
-# SAVE SCREENSHOT
-# ============================================================
-
-def save_screenshot():
-
-    filename = "Livik_80x80_Road_Marked.png"
-
-    pygame.image.save(
-        screen,
-        filename
-    )
-
-    print(
-        f"Saved screenshot as {filename}"
-    )
-
-
-# ============================================================
-# CLEAR ALL ROADS
-# ============================================================
-
-def clear_roads():
-
-    road_cells.clear()
-
-    print("All road markings cleared.")
+    print(f"Saved screenshot as {screenshot_name}")
 
 
 # ============================================================
@@ -286,130 +202,121 @@ while running:
 
     for event in pygame.event.get():
 
-        # ----------------------------------------------------
-        # QUIT
-        # ----------------------------------------------------
-
         if event.type == pygame.QUIT:
-
             running = False
-
-        # ----------------------------------------------------
-        # MOUSE
-        # ----------------------------------------------------
 
         elif event.type == pygame.MOUSEBUTTONDOWN:
 
-            cell = mouse_to_cell(
-                event.pos
-            )
+            cell = mouse_to_cell(event.pos)
 
             if cell is None:
                 continue
 
-            # LEFT CLICK
-            #
-            # Toggle ROAD / NON-ROAD
-            if event.button == 1:
+            # HIGHWAY MODE
+            if edit_mode == EDIT_HIGHWAY:
 
-                toggle_road(cell)
+                # LEFT = toggle highway
+                if event.button == 1:
 
-            # RIGHT CLICK
-            #
-            # Remove road marking
-            elif event.button == 3:
+                    if cell in highway_cells:
+                        highway_cells.remove(cell)
+                    else:
+                        highway_cells.add(cell)
+                        # A cell cannot be both highway and weak.
+                        weak_cells.discard(cell)
 
-                road_cells.discard(cell)
+                # RIGHT = remove highway
+                elif event.button == 3:
+                    highway_cells.discard(cell)
 
-        # ----------------------------------------------------
-        # KEYBOARD
-        # ----------------------------------------------------
+            # WEAK / MUDDY MODE
+            elif edit_mode == EDIT_WEAK:
+
+                # LEFT = toggle weak road
+                if event.button == 1:
+
+                    # Never allow weak road on a highway cell.
+                    if cell in highway_cells:
+                        continue
+
+                    if cell in weak_cells:
+                        weak_cells.remove(cell)
+                    else:
+                        weak_cells.add(cell)
+
+                # RIGHT = remove weak road
+                elif event.button == 3:
+                    weak_cells.discard(cell)
 
         elif event.type == pygame.KEYDOWN:
 
-            # S = save screenshot + mask
-            if event.key == pygame.K_s:
+            # 1 = HIGHWAY MODE
+            if event.key == pygame.K_1:
+                edit_mode = EDIT_HIGHWAY
+                print("EDIT MODE: HIGHWAY")
 
-                save_screenshot()
-                save_mask()
+            # 2 = WEAK / MUDDY MODE
+            elif event.key == pygame.K_2:
+                edit_mode = EDIT_WEAK
+                print("EDIT MODE: WEAK / MUDDY ROAD")
 
-            # M = save only mask
+            # S = screenshot + save both masks
+            elif event.key == pygame.K_s:
+                save_all()
+
+            # M = save only both masks
             elif event.key == pygame.K_m:
+                save_mask(HIGHWAY_MASK_FILE, highway_cells)
+                save_mask(WEAK_MASK_FILE, weak_cells)
 
-                save_mask()
-
-            # C = clear everything
+            # C = clear current edit layer
             elif event.key == pygame.K_c:
 
-                clear_roads()
+                if edit_mode == EDIT_HIGHWAY:
+                    highway_cells.clear()
+                    print("Highway layer cleared.")
+                else:
+                    weak_cells.clear()
+                    print("Weak/muddy road layer cleared.")
 
             # ESC = quit
             elif event.key == pygame.K_ESCAPE:
-
                 running = False
 
     # ========================================================
     # DRAW MAP
     # ========================================================
 
-    screen.blit(
-        map_image,
-        (0, 0)
-    )
+    screen.blit(map_image, (0, 0))
 
     # ========================================================
-    # DRAW ROAD CELLS
+    # DRAW HIGHWAYS
     # ========================================================
 
-    for row, col in road_cells:
+    for row, col in highway_cells:
 
         x = col * CELL_SIZE
         y = row * CELL_SIZE
 
         pygame.draw.rect(
             screen,
-            (220, 60, 60),
-            (
-                x + 1,
-                y + 1,
-                CELL_SIZE - 2,
-                CELL_SIZE - 2
-            )
+            HIGHWAY_COLOR,
+            (x + 1, y + 1, CELL_SIZE - 2, CELL_SIZE - 2)
         )
 
     # ========================================================
-    # DRAW GRID
-    # ========================================================
-    #
-    # 80x80 means each cell is only 10x10 pixels.
-    #
-    # A full black grid would make the map difficult to see,
-    # so we use thin semi-transparent-looking dark lines by
-    # drawing them directly with a subtle color.
+    # DRAW WEAK / MUDDY ROADS
     # ========================================================
 
-    for row in range(ROWS + 1):
-
-        y = row * CELL_SIZE
-
-        pygame.draw.line(
-            screen,
-            (35, 35, 35),
-            (0, y),
-            (WIDTH, y),
-            1
-        )
-
-    for col in range(COLS + 1):
+    for row, col in weak_cells:
 
         x = col * CELL_SIZE
+        y = row * CELL_SIZE
 
-        pygame.draw.line(
+        pygame.draw.rect(
             screen,
-            (35, 35, 35),
-            (x, 0),
-            (x, MAP_HEIGHT),
-            1
+            WEAK_COLOR,
+            (x + 1, y + 1, CELL_SIZE - 2, CELL_SIZE - 2)
         )
 
     # ========================================================
@@ -418,65 +325,56 @@ while running:
 
     pygame.draw.rect(
         screen,
-        (20, 20, 20),
-        (
-            0,
-            MAP_HEIGHT,
-            WIDTH,
-            HUD_HEIGHT
-        )
+        HUD_COLOR,
+        (0, MAP_HEIGHT, WIDTH, HUD_HEIGHT)
     )
 
-    # --------------------------------------------------------
-    # Instructions
-    # --------------------------------------------------------
+    if edit_mode == EDIT_HIGHWAY:
+        mode_text = "MODE 1: HIGHWAY"
+        mode_color = HIGHWAY_COLOR
+    else:
+        mode_text = "MODE 2: WEAK / MUDDY ROAD"
+        mode_color = WEAK_COLOR
 
-    text1 = font.render(
-        "LEFT CLICK = ROAD / NON-ROAD",
+    mode_surface = font.render(
+        mode_text,
         True,
-        (255, 255, 255)
-    )
-
-    text2 = small_font.render(
-        "RIGHT CLICK = REMOVE ROAD    "
-        "S = SAVE    M = SAVE MASK    "
-        "C = CLEAR    ESC = QUIT",
-        True,
-        (200, 200, 200)
+        mode_color
     )
 
     screen.blit(
-        text1,
-        (10, MAP_HEIGHT + 6)
+        mode_surface,
+        (10, MAP_HEIGHT + 7)
     )
 
-    screen.blit(
-        text2,
-        (10, MAP_HEIGHT + 32)
-    )
-
-    # --------------------------------------------------------
-    # Road counter
-    # --------------------------------------------------------
-
-    status = font.render(
-        f"Road cells: {len(road_cells)} / {ROWS * COLS}",
+    instructions = small_font.render(
+        "1 = highway   2 = weak/muddy   "
+        "LEFT = toggle   RIGHT = remove   "
+        "S = save   M = masks   C = clear layer   ESC = quit",
         True,
-        (255, 255, 255)
+        LIGHT_TEXT
     )
 
     screen.blit(
-        status,
-        (590, MAP_HEIGHT + 15)
+        instructions,
+        (10, MAP_HEIGHT + 31)
     )
 
-    # ========================================================
-    # DISPLAY
-    # ========================================================
+    counter = small_font.render(
+        f"Highway: {len(highway_cells)}    "
+        f"Weak: {len(weak_cells)}    "
+        f"Total: {len(highway_cells) + len(weak_cells)}",
+        True,
+        WHITE
+    )
+
+    counter_rect = counter.get_rect(
+        topright=(WIDTH - 10, MAP_HEIGHT + 9)
+    )
+
+    screen.blit(counter, counter_rect)
 
     pygame.display.flip()
-
     clock.tick(60)
-
 
 pygame.quit()

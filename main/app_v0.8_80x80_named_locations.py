@@ -7,14 +7,23 @@ pygame.init()
 
 # ============================================================
 # AI SMART LOGISTICS ROUTER
-# v0.8 - 80x80 Highway Network + Named Locations
+# v0.8.3 - 80x80 Dual Road Network
+#
+# Highway and weak-road masks are used for routing, but the
+# road cells themselves are NOT drawn on the map.
+#
+# Search visualization:
+#   Blue   = open set
+#   Purple = closed set
+#   Orange = current A* node
+#   Yellow = final route LINE (not blocks)
 # ============================================================
 
 WIDTH = 800
 HEIGHT = 800
 
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
-pygame.display.set_caption("AI Smart Logistics Router")
+pygame.display.set_caption("AI Smart Logistics Router - v0.8.3")
 
 clock = pygame.time.Clock()
 
@@ -27,8 +36,6 @@ small_font = pygame.font.SysFont("Arial", 15)
 
 map_image = pygame.image.load("PUBG_Mobile_Livik.jpg")
 
-# Keep the original image dimensions so location reference
-# points can be scaled correctly to the displayed map.
 MAP_ORIGINAL_WIDTH, MAP_ORIGINAL_HEIGHT = map_image.get_size()
 
 map_image = pygame.transform.scale(
@@ -40,7 +47,6 @@ map_image = pygame.transform.scale(
 # GRID
 # ============================================================
 
-# v0.8: refined 80x80 highway network.
 ROWS = 80
 COLS = 80
 
@@ -54,60 +60,52 @@ MAP_SIZE_KM = 2.0
 CELL_SIZE_KM = MAP_SIZE_KM / COLS
 
 # ============================================================
-# ROAD MASK
-# ============================================================
-#
-# v0.8: load the manually refined 80x80 highway network.
-# '#' = highway / traversable
-# '.' = non-road
-#
-# Keep road_mask_80x80.txt in the same folder as this file.
+# ROAD MASK FILES
 # ============================================================
 
-ROAD_MASK_FILE = "road_mask_80x80.txt"
+HIGHWAY_MASK_FILE = "road_mask_80x80.txt"
+WEAK_MASK_FILE = "weak_road_mask_80x80.txt"
 
-
-def load_road_mask(filename):
+def load_mask(filename):
+    """Load an 80x80 '#' / '.' road mask."""
 
     with open(filename, "r", encoding="utf-8") as file:
-
-        rows = [line.rstrip("\n") for line in file if line.strip()]
+        rows = [line.rstrip("\n\r") for line in file]
 
     if len(rows) != ROWS:
         raise ValueError(
-            f"{filename} must contain exactly {ROWS} rows, "
-            f"but found {len(rows)}."
+            f"{filename} must contain {ROWS} rows."
         )
 
-    for index, row in enumerate(rows, start=1):
+    if any(len(row) != COLS for row in rows):
+        raise ValueError(
+            f"Every row in {filename} must contain {COLS} characters."
+        )
 
-        if len(row) != COLS:
-            raise ValueError(
-                f"Row {index} in {filename} must contain "
-                f"exactly {COLS} characters, but found {len(row)}."
-            )
+    if any(
+        character not in ".#"
+        for row in rows
+        for character in row
+    ):
+        raise ValueError(
+            f"{filename} may contain only '.' and '#'."
+        )
 
-        if any(character not in ".#" for character in row):
-            raise ValueError(
-                f"Row {index} in {filename} contains a character "
-                "other than '.' or '#'."
-            )
+    return {
+        (row, col)
+        for row in range(ROWS)
+        for col in range(COLS)
+        if rows[row][col] == "#"
+    }
 
-    return rows
 
+# Load both road layers.
+highway_cells = load_mask(HIGHWAY_MASK_FILE)
+weak_cells = load_mask(WEAK_MASK_FILE)
 
-road_mask = load_road_mask(ROAD_MASK_FILE)
-
-# ============================================================
-# CREATE ROAD CELL SET
-# ============================================================
-
-road_cells = set()
-
-for row in range(ROWS):
-    for col in range(COLS):
-        if road_mask[row][col] == "#":
-            road_cells.add((row, col))
+# A* can currently travel on either type.
+# We will introduce different travel costs later.
+road_cells = highway_cells | weak_cells
 
 # ============================================================
 # NAMED LOCATIONS
@@ -116,11 +114,8 @@ for row in range(ROWS):
 # These are reference points on the original Livik image.
 # They are NOT A* nodes.
 #
-# When the user clicks a named location, the program converts
-# the reference point to the current 80x80 grid and finds the
-# nearest valid road cell.
-#
-# Coordinates are approximate map-reference positions, not GPS.
+# The reference point is converted to the 80x80 grid and then
+# resolved to the nearest valid road cell.
 # ============================================================
 
 LOCATION_POINTS = {
@@ -147,24 +142,27 @@ LOCATION_POINTS = {
     "Lumber Yard": (500.1, 620.4),
 }
 
-LOCATION_NAMES = list(LOCATION_POINTS.keys())
-
 LOCATION_RADIUS = 24
 
 
 def location_to_screen(point):
-    """Convert an original-map pixel point to displayed-map pixels."""
+    """Convert original-map pixels to displayed-map pixels."""
 
     x, y = point
 
-    screen_x = int(x * WIDTH / MAP_ORIGINAL_WIDTH)
-    screen_y = int(y * HEIGHT / MAP_ORIGINAL_HEIGHT)
+    screen_x = int(
+        x * WIDTH / MAP_ORIGINAL_WIDTH
+    )
+
+    screen_y = int(
+        y * HEIGHT / MAP_ORIGINAL_HEIGHT
+    )
 
     return screen_x, screen_y
 
 
 def screen_to_cell(position):
-    """Convert a displayed-map pixel position into a grid cell."""
+    """Convert displayed-map pixels to an 80x80 cell."""
 
     x, y = position
 
@@ -179,11 +177,7 @@ def screen_to_cell(position):
 
 def nearest_road_cell(screen_position):
     """
-    Resolve a named location's reference point to the nearest
-    traversable road cell.
-
-    The road network is connected in the current mask, so the
-    nearest valid road cell is a usable A* node.
+    Resolve a named location to the nearest traversable road cell.
     """
 
     reference_cell = screen_to_cell(screen_position)
@@ -191,28 +185,28 @@ def nearest_road_cell(screen_position):
     if reference_cell is None:
         return None
 
+    ref_row, ref_col = reference_cell
+
     best_cell = None
     best_distance = float("inf")
 
-    for cell in road_cells:
-
-        row, col = cell
-        ref_row, ref_col = reference_cell
+    for row, col in road_cells:
 
         distance = math.sqrt(
-            (row - ref_row) ** 2 +
+            (row - ref_row) ** 2
+            +
             (col - ref_col) ** 2
         )
 
         if distance < best_distance:
             best_distance = distance
-            best_cell = cell
+            best_cell = (row, col)
 
     return best_cell
 
 
 def find_clicked_location(mouse_position):
-    """Return the name of a nearby named location, if any."""
+    """Return a nearby named location, if one was clicked."""
 
     mouse_x, mouse_y = mouse_position
 
@@ -224,11 +218,16 @@ def find_clicked_location(mouse_position):
         location_x, location_y = location_to_screen(point)
 
         distance = math.sqrt(
-            (mouse_x - location_x) ** 2 +
+            (mouse_x - location_x) ** 2
+            +
             (mouse_y - location_y) ** 2
         )
 
-        if distance <= LOCATION_RADIUS and distance < best_distance:
+        if (
+            distance <= LOCATION_RADIUS
+            and
+            distance < best_distance
+        ):
             best_name = name
             best_distance = distance
 
@@ -264,24 +263,20 @@ def get_neighbors(cell):
         new_row = row + dr
         new_col = col + dc
 
+        if not (
+            0 <= new_row < ROWS
+            and
+            0 <= new_col < COLS
+        ):
+            continue
+
         new_cell = (new_row, new_col)
 
-        # Stay inside grid
-        if not (0 <= new_row < ROWS):
-            continue
-
-        if not (0 <= new_col < COLS):
-            continue
-
-        # Must be a road
         if new_cell not in road_cells:
             continue
 
-        # Straight movement
         if dr == 0 or dc == 0:
             cost = 1.0
-
-        # Diagonal movement
         else:
             cost = math.sqrt(2)
 
@@ -318,7 +313,6 @@ g_score = {}
 
 start = None
 goal = None
-
 current = None
 
 closed_set = set()
@@ -334,10 +328,10 @@ finished = False
 last_step_time = 0
 
 SEARCH_DELAY = 0.08
-PATH_DELAY = 0.05
+PATH_DELAY = 0.025
 
 # ============================================================
-# LOCATION SELECTION STATE
+# LOCATION STATE
 # ============================================================
 
 start_location_name = None
@@ -420,7 +414,6 @@ def start_search(start_cell, goal_cell):
     global finished
     global last_step_time
 
-    # Reset everything
     open_heap = []
     came_from = {}
 
@@ -497,7 +490,6 @@ def astar_step():
     global path_animation
     global finished
 
-    # Nothing left to search
     if not open_heap:
 
         searching = False
@@ -505,24 +497,21 @@ def astar_step():
 
         return
 
-    # Get best node
     f_score, current_g, current_node = heapq.heappop(
         open_heap
     )
 
-    # Ignore outdated heap entries
+    # Ignore outdated heap entries.
     if current_g != g_score.get(
         current_node,
         float("inf")
     ):
         return
 
-    # Remove from open set
     open_set.discard(current_node)
 
     current = current_node
 
-    # Goal found
     if current_node == goal:
 
         searching = False
@@ -533,15 +522,12 @@ def astar_step():
 
         return
 
-    # Mark as explored
     closed_set.add(current_node)
 
-    # Explore neighbors
     for neighbor, movement_cost in get_neighbors(
         current_node
     ):
 
-        # Don't revisit closed nodes
         if neighbor in closed_set:
             continue
 
@@ -551,7 +537,6 @@ def astar_step():
             movement_cost
         )
 
-        # Better route to neighbor
         if (
             neighbor not in g_score
             or
@@ -631,16 +616,16 @@ def draw_text(
 
 
 # ============================================================
-# DRAW LOCATION MARKERS
+# DRAW NAMED LOCATION MARKERS
 # ============================================================
 
 def draw_location_markers():
 
+    # Neutral reference points remain small and unobtrusive.
     for name, point in LOCATION_POINTS.items():
 
         x, y = location_to_screen(point)
 
-        # Small neutral marker showing the clickable reference point.
         pygame.draw.circle(
             screen,
             (230, 230, 230),
@@ -649,7 +634,6 @@ def draw_location_markers():
             1
         )
 
-    # Selected START location
     if start_location_name is not None:
 
         x, y = location_to_screen(
@@ -664,7 +648,6 @@ def draw_location_markers():
             3
         )
 
-    # Selected DESTINATION location
     if goal_location_name is not None:
 
         x, y = location_to_screen(
@@ -706,7 +689,6 @@ def select_location(name):
     if road_cell is None:
         return
 
-    # FIRST LOCATION = START
     if start_location_name is None:
 
         start_location_name = name
@@ -723,10 +705,8 @@ def select_location(name):
 
         return
 
-    # SECOND LOCATION = DESTINATION
     if goal_location_name is None:
 
-        # Don't route from a location to itself.
         if name == start_location_name:
             return
 
@@ -742,7 +722,6 @@ def select_location(name):
 
         return
 
-    # THIRD LOCATION = start a new route
     start_location_name = name
     start_reference = point
 
@@ -777,24 +756,16 @@ while running:
 
         elif event.type == pygame.MOUSEBUTTONDOWN:
 
-            # ------------------------------------------------
-            # RIGHT CLICK = RESET
-            # ------------------------------------------------
-
+            # Right click = reset.
             if event.button == 3:
 
                 reset_route()
 
                 continue
 
-            # ------------------------------------------------
-            # LEFT CLICK = NAMED LOCATION
-            # ------------------------------------------------
-
+            # Left click = named location.
             if event.button == 1:
 
-                # Don't allow new selections while searching
-                # or while the final route is animating.
                 if searching or path_animation:
                     continue
 
@@ -858,30 +829,12 @@ while running:
     )
 
     # ========================================================
-    # DRAW ROAD CELLS
-    # ========================================================
+    # IMPORTANT:
+    # NO HIGHWAY/WEAK ROAD BLOCK OVERLAY.
     #
-    # TEMPORARY DEBUG VISUALIZATION.
-    # We are deliberately keeping this for v0.7.
-    # It will be replaced by a cleaner road overlay later.
+    # The masks are used internally by A*, but the map stays
+    # visually clean so the search animation is easy to see.
     # ========================================================
-
-    for row in range(ROWS):
-
-        for col in range(COLS):
-
-            cell = (
-                row,
-                col
-            )
-
-            if cell in road_cells:
-
-                draw_cell(
-                    cell,
-                    (220, 60, 60),
-                    1
-                )
 
     # ========================================================
     # DRAW OPEN SET
@@ -894,7 +847,7 @@ while running:
             draw_cell(
                 cell,
                 (40, 150, 255),
-                4
+                3
             )
 
     # ========================================================
@@ -908,7 +861,7 @@ while running:
             draw_cell(
                 cell,
                 (150, 80, 180),
-                4
+                3
             )
 
     # ========================================================
@@ -926,35 +879,63 @@ while running:
             draw_cell(
                 current,
                 (255, 165, 0),
-                3
+                2
             )
 
     # ========================================================
-    # DRAW ANIMATED FINAL PATH
+    # DRAW FINAL ROUTE AS A LINE
+    #
+    # No yellow route blocks.
+    # The route is drawn as a connected line over the map.
     # ========================================================
 
-    if final_path:
+    if final_path and path_index > 0:
 
         visible_path = final_path[
             :path_index + 1
         ]
 
-        for cell in visible_path:
+        points = []
 
-            if (
-                cell != start
-                and
-                cell != goal
-            ):
+        for row, col in visible_path:
 
-                draw_cell(
-                    cell,
-                    (255, 230, 0),
-                    3
-                )
+            x = (
+                col * CELL_SIZE
+                +
+                CELL_SIZE // 2
+            )
+
+            y = (
+                row * CELL_SIZE
+                +
+                CELL_SIZE // 2
+            )
+
+            points.append(
+                (x, y)
+            )
+
+        if len(points) >= 2:
+
+            pygame.draw.lines(
+                screen,
+                (255, 230, 0),
+                False,
+                points,
+                4
+            )
+
+        elif len(points) == 1:
+
+            pygame.draw.circle(
+                screen,
+                (255, 230, 0),
+                points[0],
+                3
+            )
 
     # ========================================================
-    # DRAW A* START ROAD CELL
+    # DRAW START / GOAL ROAD CELLS
     # ========================================================
 
     if start is not None:
@@ -962,19 +943,15 @@ while running:
         draw_cell(
             start,
             (0, 170, 255),
-            2
+            1
         )
-
-    # ========================================================
-    # DRAW A* GOAL ROAD CELL
-    # ========================================================
 
     if goal is not None:
 
         draw_cell(
             goal,
             (255, 70, 70),
-            2
+            1
         )
 
     # ========================================================
@@ -997,10 +974,6 @@ while running:
             40
         )
     )
-
-    # --------------------------------------------------------
-    # STATUS MESSAGE
-    # --------------------------------------------------------
 
     if start_location_name is None:
 
@@ -1069,11 +1042,8 @@ while running:
             dc = abs(c2 - c1)
 
             if dr == 1 and dc == 1:
-
                 distance_cells += math.sqrt(2)
-
             else:
-
                 distance_cells += 1
 
         distance_km = (
