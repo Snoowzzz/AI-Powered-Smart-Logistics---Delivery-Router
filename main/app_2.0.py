@@ -7,7 +7,7 @@ pygame.init()
 
 # ============================================================
 # AI SMART LOGISTICS ROUTER
-# v0.8.4 - 80x80 Route Analytics Popup
+# v0.8.6 - 80x80 Route Analytics + Vehicle Profiles
 #
 # Highway and weak-road masks are used for routing, but the
 # road cells themselves are NOT drawn on the map.
@@ -21,9 +21,12 @@ pygame.init()
 
 WIDTH = 800
 HEIGHT = 800
+WINDOW_WIDTH = 1180
 
-screen = pygame.display.set_mode((WIDTH, HEIGHT))
-pygame.display.set_caption("AI Smart Logistics Router - v0.8.4")
+# The map remains exactly 800x800. The extra window space is used
+# only for the Route Details panel, so map/grid coordinates do not change.
+screen = pygame.display.set_mode((WINDOW_WIDTH, HEIGHT))
+pygame.display.set_caption("AI Smart Logistics Router - v0.8.7")
 
 clock = pygame.time.Clock()
 
@@ -36,9 +39,9 @@ popup_small_font = pygame.font.SysFont("Arial", 14)
 # Route-information popup. It is drawn over the map rather than
 # opening a separate operating-system window, so the application
 # remains self-contained and the A* animation stays visible behind it.
-POPUP_WIDTH = 310
-POPUP_HEIGHT = 360
-POPUP_X = WIDTH - POPUP_WIDTH - 18
+POPUP_WIDTH = 340
+POPUP_HEIGHT = 455
+POPUP_X = WIDTH + 20
 POPUP_Y = 18
 
 # The popup can be moved by dragging its header. These values are
@@ -47,6 +50,48 @@ POPUP_Y = 18
 popup_dragging = False
 popup_drag_offset_x = 0
 popup_drag_offset_y = 0
+
+# ============================================================
+# VEHICLE PROFILES — STAGE 2
+# ============================================================
+# Highway remains 1.00 for every vehicle.
+# Vehicle-specific weak-road multipliers.
+# Highway remains 1.00 for every vehicle.
+VEHICLE_PROFILES = {
+    "Car": 1.50,
+    "Bike": 1.20,
+    "Truck": 2.20,
+    "Emergency": 1.10,
+}
+
+selected_vehicle = "Car"
+vehicle_button_rects = {}
+
+def get_selected_vehicle_multiplier():
+    return VEHICLE_PROFILES[selected_vehicle]
+
+def set_vehicle(vehicle_name):
+    global selected_vehicle
+    if vehicle_name in VEHICLE_PROFILES and not searching and not path_animation:
+        selected_vehicle = vehicle_name
+
+def get_popup_vehicle_button_rects():
+    # Four compact buttons across the popup.
+    names = list(VEHICLE_PROFILES.keys())
+    rects = {}
+    button_y = POPUP_Y + 135
+    gap = 8
+    left = POPUP_X + 18
+    total_width = POPUP_WIDTH - 36
+    button_width = (total_width - gap * (len(names) - 1)) // len(names)
+    for index, name in enumerate(names):
+        rects[name] = pygame.Rect(
+            left + index * (button_width + gap),
+            button_y,
+            button_width,
+            34
+        )
+    return rects
 
 def get_popup_rect():
     return pygame.Rect(POPUP_X, POPUP_Y, POPUP_WIDTH, POPUP_HEIGHT)
@@ -69,7 +114,7 @@ def get_popup_header_rect():
     )
 
 def clamp_popup_position(x, y):
-    x = max(0, min(x, WIDTH - POPUP_WIDTH))
+    x = max(WIDTH + 10, min(x, WINDOW_WIDTH - POPUP_WIDTH - 10))
     y = max(0, min(y, HEIGHT - POPUP_HEIGHT))
     return x, y
 
@@ -361,7 +406,9 @@ def get_neighbors(cell):
         if new_cell in highway_cells:
             road_multiplier = 1.0
         elif new_cell in weak_cells:
-            road_multiplier = 1.25
+            road_multiplier = get_selected_vehicle_multiplier()
+        else:
+            continue
 
         cost = geometric_cost * road_multiplier
 
@@ -773,7 +820,7 @@ def draw_popup_text(surface, text, position, text_font, center=False):
 
 
 def draw_route_popup():
-    """Draw the route/search information panel over the map."""
+    """Draw the draggable route/search/vehicle information panel."""
     if not route_popup_visible:
         return
 
@@ -785,10 +832,9 @@ def draw_route_popup():
         pygame.SRCALPHA
     )
 
-    # Dark translucent background keeps the map visible underneath.
     pygame.draw.rect(
         popup,
-        (12, 16, 22, 235),
+        (12, 16, 22, 238),
         popup.get_rect(),
         border_radius=14
     )
@@ -800,15 +846,20 @@ def draw_route_popup():
         border_radius=14
     )
 
-    # Header
+    # Header / drag handle
     draw_popup_text(
         popup,
         "ROUTE DETAILS",
         (18, 16),
         popup_title_font
     )
+    draw_popup_text(
+        popup,
+        "Drag header to move",
+        (18, 39),
+        popup_small_font
+    )
 
-    # Close button
     close_local = pygame.Rect(
         close_rect.x - POPUP_X,
         close_rect.y - POPUP_Y,
@@ -838,7 +889,7 @@ def draw_route_popup():
         draw_popup_text(
             popup,
             f"From: {start_location_name}",
-            (18, 62),
+            (18, 66),
             popup_font
         )
 
@@ -846,45 +897,113 @@ def draw_route_popup():
         draw_popup_text(
             popup,
             f"To: {goal_location_name}",
-            (18, 88),
+            (18, 91),
             popup_font
         )
+    else:
+        draw_popup_text(
+            popup,
+            "To: Select destination on map",
+            (18, 91),
+            popup_small_font
+        )
 
-    # Divider
     pygame.draw.line(
         popup,
         (75, 82, 92),
-        (18, 120),
-        (POPUP_WIDTH - 18, 120),
+        (18, 116),
+        (POPUP_WIDTH - 18, 116),
+        1
+    )
+
+    # Vehicle selection is available before the search starts.
+    draw_popup_text(
+        popup,
+        "Vehicle",
+        (18, 126),
+        popup_small_font
+    )
+
+    button_rects = get_popup_vehicle_button_rects()
+    vehicle_button_rects.clear()
+    vehicle_button_rects.update(button_rects)
+
+    for vehicle_name, rect in button_rects.items():
+        local = rect.move(-POPUP_X, -POPUP_Y)
+        selected = vehicle_name == selected_vehicle
+        enabled = not searching and not path_animation
+        fill = (55, 115, 170, 255) if selected else (45, 50, 58, 255)
+        border = (120, 190, 255, 255) if selected else (90, 100, 115, 255)
+        if not enabled:
+            fill = (38, 42, 48, 255)
+            border = (65, 70, 78, 255)
+        pygame.draw.rect(popup, fill, local, border_radius=7)
+        pygame.draw.rect(popup, border, local, 1, border_radius=7)
+        text_color = (245, 245, 245) if enabled or selected else (150, 155, 160)
+        text_surface = popup_small_font.render(vehicle_name, True, text_color)
+        popup.blit(
+            text_surface,
+            (
+                local.centerx - text_surface.get_width() // 2,
+                local.centery - text_surface.get_height() // 2
+            )
+        )
+
+    draw_popup_text(
+        popup,
+        f"Weak-road multiplier: {get_selected_vehicle_multiplier():.2f}",
+        (18, 178),
+        popup_small_font
+    )
+
+    pygame.draw.line(
+        popup,
+        (75, 82, 92),
+        (18, 203),
+        (POPUP_WIDTH - 18, 203),
         1
     )
 
     explored = len(closed_set)
     frontier = len(open_set)
 
-    if searching:
+    if start_location_name is not None and goal_location_name is None:
+        draw_popup_text(
+            popup,
+            "Select a destination to start A*.",
+            (18, 222),
+            popup_font
+        )
+        draw_popup_text(
+            popup,
+            "Vehicle selection will be used for the route.",
+            (18, 256),
+            popup_small_font
+        )
+
+    elif searching:
         draw_popup_text(
             popup,
             "A* is searching...",
-            (18, 140),
+            (18, 222),
             popup_font
         )
         draw_popup_text(
             popup,
             f"Explored nodes: {explored}",
-            (18, 174),
+            (18, 256),
             popup_small_font
         )
         draw_popup_text(
             popup,
             f"Open set: {frontier}",
-            (18, 197),
+            (18, 279),
             popup_small_font
         )
         draw_popup_text(
             popup,
-            "Please wait while the route is calculated.",
-            (18, 235),
+            "Vehicle selection is locked during search.",
+            (18, 316),
             popup_small_font
         )
 
@@ -892,13 +1011,13 @@ def draw_route_popup():
         draw_popup_text(
             popup,
             "Route found — drawing route...",
-            (18, 140),
+            (18, 222),
             popup_font
         )
         draw_popup_text(
             popup,
             f"Explored nodes: {explored}",
-            (18, 174),
+            (18, 256),
             popup_small_font
         )
 
@@ -906,59 +1025,56 @@ def draw_route_popup():
         draw_popup_text(
             popup,
             "Route complete",
-            (18, 140),
+            (18, 222),
             popup_font
         )
-
+        draw_popup_text(
+            popup,
+            f"Vehicle: {selected_vehicle}",
+            (18, 250),
+            popup_small_font
+        )
         draw_popup_text(
             popup,
             f"Explored: {explored}",
-            (18, 176),
+            (18, 276),
             popup_small_font
         )
         draw_popup_text(
             popup,
             f"Distance: {route_distance_m:.0f} m",
-            (18, 199),
+            (18, 299),
             popup_small_font
         )
         draw_popup_text(
             popup,
             f"Weighted Cost: {weighted_route_cost:.2f}",
-            (18, 222),
+            (18, 322),
             popup_small_font
         )
         draw_popup_text(
             popup,
             f"Highway: {highway_distance_m:.0f} m",
-            (18, 245),
+            (18, 345),
             popup_small_font
         )
         draw_popup_text(
             popup,
             f"Weak Road: {weak_distance_m:.0f} m",
-            (18, 268),
+            (18, 368),
             popup_small_font
         )
-
         pygame.draw.line(
             popup,
             (75, 82, 92),
-            (18, 296),
-            (POPUP_WIDTH - 18, 296),
+            (18, 397),
+            (POPUP_WIDTH - 18, 397),
             1
         )
         draw_popup_text(
             popup,
-            "Right-click: reset route",
-            (18, 312),
-            popup_small_font
-        )
-    else:
-        draw_popup_text(
-            popup,
-            "Select a destination to begin.",
-            (18, 145),
+            "Select a new location to start another route.",
+            (18, 410),
             popup_small_font
         )
 
@@ -1052,6 +1168,7 @@ def select_location(name):
 
         final_path = []
         finished = False
+        route_popup_visible = True
 
         return
 
@@ -1074,7 +1191,7 @@ def select_location(name):
 
     start_location_name = name
     start_reference = point
-    route_popup_visible = False
+    route_popup_visible = True
 
     start = road_cell
 
@@ -1127,6 +1244,16 @@ while running:
                         popup_dragging = True
                         popup_drag_offset_x = event.pos[0] - POPUP_X
                         popup_drag_offset_y = event.pos[1] - POPUP_Y
+                        continue
+
+                    vehicle_clicked = False
+                    for vehicle_name, vehicle_rect in vehicle_button_rects.items():
+                        if vehicle_rect.collidepoint(event.pos):
+                            set_vehicle(vehicle_name)
+                            vehicle_clicked = True
+                            break
+
+                    if vehicle_clicked:
                         continue
 
                 if searching or path_animation:
@@ -1199,10 +1326,24 @@ while running:
     # DRAW MAP
     # ========================================================
 
+    # Keep the map at its original 800x800 size. The right side is
+    # a separate UI area for Route Details and does not affect routing.
+    screen.fill((18, 22, 28))
     screen.blit(
         map_image,
         (0, 0)
     )
+
+    pygame.draw.rect(
+        screen,
+        (28, 33, 40),
+        (WIDTH, 0, WINDOW_WIDTH - WIDTH, HEIGHT)
+    )
+
+    side_title = popup_title_font.render(
+        "ROUTE PANEL", True, (220, 225, 232)
+    )
+    screen.blit(side_title, (WIDTH + 20, 770))
 
     # ========================================================
     # IMPORTANT:
@@ -1339,8 +1480,8 @@ while running:
     # ========================================================
     # ROUTE INFORMATION POPUP
     # ========================================================
-    # The popup is draggable: click and drag the ROUTE DETAILS
-    # header to any part of the map.
+    # The popup lives in the dedicated panel to the right of the map.
+    # It remains draggable within that panel.
 
     draw_route_popup()
 
@@ -1369,6 +1510,7 @@ while running:
 
         status = (
             f"Start: {start_location_name}  |  "
+            f"Vehicle: {selected_vehicle}  |  "
             "Click a named location for DESTINATION"
         )
 
@@ -1377,7 +1519,7 @@ while running:
         status = (
             f"{start_location_name} → "
             f"{goal_location_name}  |  "
-            "A* is searching..."
+            f"{selected_vehicle}  |  A* is searching..."
         )
 
     elif path_animation:
@@ -1385,7 +1527,7 @@ while running:
         status = (
             f"{start_location_name} → "
             f"{goal_location_name}  |  "
-            "Route found — building route..."
+            f"{selected_vehicle}  |  Route found — building route..."
         )
 
     elif finished:
@@ -1393,7 +1535,7 @@ while running:
         status = (
             f"{start_location_name} → "
             f"{goal_location_name}  |  "
-            "Route complete! Right-click to reset."
+            f"{selected_vehicle}  |  Route complete! Right-click to reset."
         )
 
     else:
@@ -1415,6 +1557,7 @@ while running:
 
     if final_path:
         stats_line_1 = (
+            f"Vehicle: {selected_vehicle}   "
             f"Explored: {explored}   "
             f"Distance: {route_distance_m:.0f} m   "
             f"Weighted Cost: {weighted_route_cost:.2f}"
