@@ -65,6 +65,7 @@ CELL_SIZE_KM = MAP_SIZE_KM / COLS
 
 HIGHWAY_MASK_FILE = "road_mask_80x80.txt"
 WEAK_MASK_FILE = "weak_road_mask_80x80.txt"
+ACCESS_POINTS_FILE = "location_access_points.txt"
 
 def load_mask(filename):
     """Load an 80x80 '#' / '.' road mask."""
@@ -103,28 +104,70 @@ def load_mask(filename):
 highway_cells = load_mask(HIGHWAY_MASK_FILE)
 weak_cells = load_mask(WEAK_MASK_FILE)
 
-# A* can currently travel on either type.
-# We will introduce different travel costs later.
+# A* can travel on either road type.
 road_cells = highway_cells | weak_cells
-print("Highway cells:", len(highway_cells))
-print("Weak road cells:", len(weak_cells))
-print("Total road cells:", len(road_cells))
 
-touching_weak = 0
 
-for r, c in weak_cells:
-    for dr, dc in [
-        (-1, -1), (-1, 0), (-1, 1),
-        (0, -1),           (0, 1),
-        (1, -1),  (1, 0),  (1, 1)
-    ]:
-        neighbor = (r + dr, c + dc)
+# ============================================================
+# LOCATION ACCESS POINTS
+# ============================================================
 
-        if neighbor in highway_cells:
-            touching_weak += 1
-            break
+# Each named location has one exact 80x80 road cell selected
+# manually with the location-access marker tool.
 
-print("Weak-road cells connected to highway:", touching_weak)
+def load_access_points(filename):
+    """Load named-location access cells from name=row,col lines."""
+
+    access_points = {}
+
+    with open(filename, "r", encoding="utf-8") as file:
+        for line_number, line in enumerate(file, start=1):
+
+            line = line.strip()
+
+            if not line:
+                continue
+
+            if "=" not in line:
+                raise ValueError(
+                    f"Invalid access-point entry on line {line_number}: {line}"
+                )
+
+            name, coordinates = line.split("=", 1)
+            name = name.strip()
+
+            if name not in LOCATION_POINTS:
+                raise ValueError(
+                    f"Unknown location in access-point file: {name}"
+                )
+
+            try:
+                row_text, col_text = coordinates.split(",", 1)
+                row = int(row_text.strip())
+                col = int(col_text.strip())
+            except ValueError:
+                raise ValueError(
+                    f"Invalid coordinates for {name}: {coordinates}"
+                )
+
+            cell = (row, col)
+
+            if cell not in road_cells:
+                raise ValueError(
+                    f"Access point for {name} {cell} is not a road cell."
+                )
+
+            access_points[name] = cell
+
+    missing = set(LOCATION_POINTS) - set(access_points)
+
+    if missing:
+        missing_text = ", ".join(sorted(missing))
+        raise ValueError(
+            "Missing access points for: " + missing_text
+        )
+
+    return access_points
 
 # ============================================================
 # NAMED LOCATIONS
@@ -133,8 +176,9 @@ print("Weak-road cells connected to highway:", touching_weak)
 # These are reference points on the original Livik image.
 # They are NOT A* nodes.
 #
-# The reference point is converted to the 80x80 grid and then
-# resolved to the nearest valid road cell.
+# Each location also has an exact road access cell stored in
+# location_access_points.txt. The reference point is used only
+# for the clickable visual marker.
 # ============================================================
 
 LOCATION_POINTS = {
@@ -162,18 +206,8 @@ LOCATION_POINTS = {
 }
 
 LOCATION_RADIUS = 24
-# ============================================================
-# MANUAL LOCATION ACCESS POINTS
-# ============================================================
 
-# These are exact 80x80 grid cells where named locations
-# should connect to the road network.
-
-LOCATION_ACCESS = {
-    "Wengen": (7, 10),
-    "Lumber Yard": (66, 50),
-    "Shipyard": (56, 72),
-}
+LOCATION_ACCESS = load_access_points(ACCESS_POINTS_FILE)
 
 
 def location_to_screen(point):
@@ -204,36 +238,6 @@ def screen_to_cell(position):
         return row, col
 
     return None
-
-
-def nearest_road_cell(screen_position):
-    """
-    Resolve a named location to the nearest traversable road cell.
-    """
-
-    reference_cell = screen_to_cell(screen_position)
-
-    if reference_cell is None:
-        return None
-
-    ref_row, ref_col = reference_cell
-
-    best_cell = None
-    best_distance = float("inf")
-
-    for row, col in road_cells:
-
-        distance = math.sqrt(
-            (row - ref_row) ** 2
-            +
-            (col - ref_col) ** 2
-        )
-
-        if distance < best_distance:
-            best_distance = distance
-            best_cell = (row, col)
-
-    return best_cell
 
 
 def find_clicked_location(mouse_position):
@@ -722,13 +726,9 @@ def select_location(name):
         LOCATION_POINTS[name]
     )
 
-    road_cell = LOCATION_ACCESS.get(name)
-
-    if road_cell is None:
-        road_cell = nearest_road_cell(point)
-
-    if road_cell is None:
-        return
+    # Use the exact access cell selected for this named location.
+    # No nearest-road guessing is used anymore.
+    road_cell = LOCATION_ACCESS[name]
 
     if start_location_name is None:
 
