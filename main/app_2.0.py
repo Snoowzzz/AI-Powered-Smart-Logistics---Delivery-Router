@@ -40,8 +40,38 @@ POPUP_WIDTH = 310
 POPUP_HEIGHT = 360
 POPUP_X = WIDTH - POPUP_WIDTH - 18
 POPUP_Y = 18
-POPUP_RECT = pygame.Rect(POPUP_X, POPUP_Y, POPUP_WIDTH, POPUP_HEIGHT)
-POPUP_CLOSE_RECT = pygame.Rect(POPUP_X + POPUP_WIDTH - 38, POPUP_Y + 10, 26, 26)
+
+# The popup can be moved by dragging its header. These values are
+# deliberately kept as separate state so the popup can be repositioned
+# without affecting the map or routing logic.
+popup_dragging = False
+popup_drag_offset_x = 0
+popup_drag_offset_y = 0
+
+def get_popup_rect():
+    return pygame.Rect(POPUP_X, POPUP_Y, POPUP_WIDTH, POPUP_HEIGHT)
+
+def get_popup_close_rect():
+    return pygame.Rect(
+        POPUP_X + POPUP_WIDTH - 38,
+        POPUP_Y + 10,
+        26,
+        26
+    )
+
+def get_popup_header_rect():
+    # The header/title area is the drag handle.
+    return pygame.Rect(
+        POPUP_X,
+        POPUP_Y,
+        POPUP_WIDTH,
+        48
+    )
+
+def clamp_popup_position(x, y):
+    x = max(0, min(x, WIDTH - POPUP_WIDTH))
+    y = max(0, min(y, HEIGHT - POPUP_HEIGHT))
+    return x, y
 
 # ============================================================
 # MAP
@@ -465,6 +495,7 @@ def reset_route():
     start_reference = None
     goal_reference = None
     route_popup_visible = False
+    popup_dragging = False
     route_distance_m = 0.0
     highway_distance_m = 0.0
     weak_distance_m = 0.0
@@ -746,6 +777,9 @@ def draw_route_popup():
     if not route_popup_visible:
         return
 
+    popup_rect = get_popup_rect()
+    close_rect = get_popup_close_rect()
+
     popup = pygame.Surface(
         (POPUP_WIDTH, POPUP_HEIGHT),
         pygame.SRCALPHA
@@ -776,10 +810,10 @@ def draw_route_popup():
 
     # Close button
     close_local = pygame.Rect(
-        POPUP_CLOSE_RECT.x - POPUP_X,
-        POPUP_CLOSE_RECT.y - POPUP_Y,
-        POPUP_CLOSE_RECT.width,
-        POPUP_CLOSE_RECT.height
+        close_rect.x - POPUP_X,
+        close_rect.y - POPUP_Y,
+        close_rect.width,
+        close_rect.height
     )
     pygame.draw.rect(
         popup,
@@ -1080,12 +1114,20 @@ while running:
 
                 continue
 
-            # Left click = popup close or named location.
+            # Left click = popup close, popup drag, or named location.
             if event.button == 1:
 
-                if route_popup_visible and POPUP_CLOSE_RECT.collidepoint(event.pos):
-                    route_popup_visible = False
-                    continue
+                if route_popup_visible:
+
+                    if get_popup_close_rect().collidepoint(event.pos):
+                        route_popup_visible = False
+                        continue
+
+                    if get_popup_header_rect().collidepoint(event.pos):
+                        popup_dragging = True
+                        popup_drag_offset_x = event.pos[0] - POPUP_X
+                        popup_drag_offset_y = event.pos[1] - POPUP_Y
+                        continue
 
                 if searching or path_animation:
                     continue
@@ -1099,6 +1141,19 @@ while running:
                     select_location(
                         location_name
                     )
+
+        elif event.type == pygame.MOUSEMOTION:
+
+            if popup_dragging:
+                POPUP_X, POPUP_Y = clamp_popup_position(
+                    event.pos[0] - popup_drag_offset_x,
+                    event.pos[1] - popup_drag_offset_y
+                )
+
+        elif event.type == pygame.MOUSEBUTTONUP:
+
+            if event.button == 1:
+                popup_dragging = False
 
     # ========================================================
     # ANIMATE A* SEARCH
@@ -1284,6 +1339,8 @@ while running:
     # ========================================================
     # ROUTE INFORMATION POPUP
     # ========================================================
+    # The popup is draggable: click and drag the ROUTE DETAILS
+    # header to any part of the map.
 
     draw_route_popup()
 
