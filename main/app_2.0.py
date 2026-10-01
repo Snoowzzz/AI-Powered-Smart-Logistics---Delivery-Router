@@ -7,7 +7,7 @@ pygame.init()
 
 # ============================================================
 # AI SMART LOGISTICS ROUTER
-# v0.8.3 - 80x80 Dual Road Network
+# v0.8.4 - 80x80 Route Analytics Popup
 #
 # Highway and weak-road masks are used for routing, but the
 # road cells themselves are NOT drawn on the map.
@@ -23,12 +23,25 @@ WIDTH = 800
 HEIGHT = 800
 
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
-pygame.display.set_caption("AI Smart Logistics Router - v0.8.3")
+pygame.display.set_caption("AI Smart Logistics Router - v0.8.4")
 
 clock = pygame.time.Clock()
 
 font = pygame.font.SysFont("Arial", 20)
 small_font = pygame.font.SysFont("Arial", 15)
+popup_title_font = pygame.font.SysFont("Arial", 22, bold=True)
+popup_font = pygame.font.SysFont("Arial", 17)
+popup_small_font = pygame.font.SysFont("Arial", 14)
+
+# Route-information popup. It is drawn over the map rather than
+# opening a separate operating-system window, so the application
+# remains self-contained and the A* animation stays visible behind it.
+POPUP_WIDTH = 310
+POPUP_HEIGHT = 360
+POPUP_X = WIDTH - POPUP_WIDTH - 18
+POPUP_Y = 18
+POPUP_RECT = pygame.Rect(POPUP_X, POPUP_Y, POPUP_WIDTH, POPUP_HEIGHT)
+POPUP_CLOSE_RECT = pygame.Rect(POPUP_X + POPUP_WIDTH - 38, POPUP_Y + 10, 26, 26)
 
 # ============================================================
 # MAP
@@ -367,6 +380,11 @@ searching = False
 path_animation = False
 finished = False
 
+# Route popup state. The popup appears as soon as a destination is
+# selected, shows the A* searching state, then changes to the final
+# route analytics when the route is complete.
+route_popup_visible = False
+
 last_step_time = 0
 
 # ROUTE ANALYTICS
@@ -417,6 +435,7 @@ def reset_route():
 
     global start_reference
     global goal_reference
+    global route_popup_visible
     global route_distance_m
     global highway_distance_m
     global weak_distance_m
@@ -445,6 +464,7 @@ def reset_route():
 
     start_reference = None
     goal_reference = None
+    route_popup_visible = False
     route_distance_m = 0.0
     highway_distance_m = 0.0
     weak_distance_m = 0.0
@@ -469,6 +489,7 @@ def start_search(start_cell, goal_cell):
     global path_animation
     global finished
     global last_step_time
+    global route_popup_visible
     global route_distance_m
     global highway_distance_m
     global weak_distance_m
@@ -494,6 +515,7 @@ def start_search(start_cell, goal_cell):
     searching = True
     path_animation = False
     finished = False
+    route_popup_visible = True
 
     route_distance_m = 0.0
     highway_distance_m = 0.0
@@ -706,6 +728,210 @@ def draw_text(
 
 
 # ============================================================
+# DRAW ROUTE INFORMATION POPUP
+# ============================================================
+
+def draw_popup_text(surface, text, position, text_font, center=False):
+    """Draw one line of popup text."""
+    text_surface = text_font.render(text, True, (245, 245, 245))
+    if center:
+        x = position[0] - text_surface.get_width() // 2
+    else:
+        x = position[0]
+    surface.blit(text_surface, (x, position[1]))
+
+
+def draw_route_popup():
+    """Draw the route/search information panel over the map."""
+    if not route_popup_visible:
+        return
+
+    popup = pygame.Surface(
+        (POPUP_WIDTH, POPUP_HEIGHT),
+        pygame.SRCALPHA
+    )
+
+    # Dark translucent background keeps the map visible underneath.
+    pygame.draw.rect(
+        popup,
+        (12, 16, 22, 235),
+        popup.get_rect(),
+        border_radius=14
+    )
+    pygame.draw.rect(
+        popup,
+        (90, 100, 115, 255),
+        popup.get_rect(),
+        2,
+        border_radius=14
+    )
+
+    # Header
+    draw_popup_text(
+        popup,
+        "ROUTE DETAILS",
+        (18, 16),
+        popup_title_font
+    )
+
+    # Close button
+    close_local = pygame.Rect(
+        POPUP_CLOSE_RECT.x - POPUP_X,
+        POPUP_CLOSE_RECT.y - POPUP_Y,
+        POPUP_CLOSE_RECT.width,
+        POPUP_CLOSE_RECT.height
+    )
+    pygame.draw.rect(
+        popup,
+        (45, 50, 58, 255),
+        close_local,
+        border_radius=7
+    )
+    pygame.draw.line(
+        popup, (220, 220, 220),
+        (close_local.x + 8, close_local.y + 8),
+        (close_local.right - 8, close_local.bottom - 8),
+        2
+    )
+    pygame.draw.line(
+        popup, (220, 220, 220),
+        (close_local.right - 8, close_local.y + 8),
+        (close_local.x + 8, close_local.bottom - 8),
+        2
+    )
+
+    if start_location_name is not None:
+        draw_popup_text(
+            popup,
+            f"From: {start_location_name}",
+            (18, 62),
+            popup_font
+        )
+
+    if goal_location_name is not None:
+        draw_popup_text(
+            popup,
+            f"To: {goal_location_name}",
+            (18, 88),
+            popup_font
+        )
+
+    # Divider
+    pygame.draw.line(
+        popup,
+        (75, 82, 92),
+        (18, 120),
+        (POPUP_WIDTH - 18, 120),
+        1
+    )
+
+    explored = len(closed_set)
+    frontier = len(open_set)
+
+    if searching:
+        draw_popup_text(
+            popup,
+            "A* is searching...",
+            (18, 140),
+            popup_font
+        )
+        draw_popup_text(
+            popup,
+            f"Explored nodes: {explored}",
+            (18, 174),
+            popup_small_font
+        )
+        draw_popup_text(
+            popup,
+            f"Open set: {frontier}",
+            (18, 197),
+            popup_small_font
+        )
+        draw_popup_text(
+            popup,
+            "Please wait while the route is calculated.",
+            (18, 235),
+            popup_small_font
+        )
+
+    elif path_animation:
+        draw_popup_text(
+            popup,
+            "Route found — drawing route...",
+            (18, 140),
+            popup_font
+        )
+        draw_popup_text(
+            popup,
+            f"Explored nodes: {explored}",
+            (18, 174),
+            popup_small_font
+        )
+
+    elif finished and final_path:
+        draw_popup_text(
+            popup,
+            "Route complete",
+            (18, 140),
+            popup_font
+        )
+
+        draw_popup_text(
+            popup,
+            f"Explored: {explored}",
+            (18, 176),
+            popup_small_font
+        )
+        draw_popup_text(
+            popup,
+            f"Distance: {route_distance_m:.0f} m",
+            (18, 199),
+            popup_small_font
+        )
+        draw_popup_text(
+            popup,
+            f"Weighted Cost: {weighted_route_cost:.2f}",
+            (18, 222),
+            popup_small_font
+        )
+        draw_popup_text(
+            popup,
+            f"Highway: {highway_distance_m:.0f} m",
+            (18, 245),
+            popup_small_font
+        )
+        draw_popup_text(
+            popup,
+            f"Weak Road: {weak_distance_m:.0f} m",
+            (18, 268),
+            popup_small_font
+        )
+
+        pygame.draw.line(
+            popup,
+            (75, 82, 92),
+            (18, 296),
+            (POPUP_WIDTH - 18, 296),
+            1
+        )
+        draw_popup_text(
+            popup,
+            "Right-click: reset route",
+            (18, 312),
+            popup_small_font
+        )
+    else:
+        draw_popup_text(
+            popup,
+            "Select a destination to begin.",
+            (18, 145),
+            popup_small_font
+        )
+
+    screen.blit(popup, (POPUP_X, POPUP_Y))
+
+
+# ============================================================
 # DRAW NAMED LOCATION MARKERS
 # ============================================================
 
@@ -769,6 +995,7 @@ def select_location(name):
     global goal
     global final_path
     global finished
+    global route_popup_visible
 
     point = location_to_screen(
         LOCATION_POINTS[name]
@@ -813,6 +1040,7 @@ def select_location(name):
 
     start_location_name = name
     start_reference = point
+    route_popup_visible = False
 
     start = road_cell
 
@@ -852,8 +1080,12 @@ while running:
 
                 continue
 
-            # Left click = named location.
+            # Left click = popup close or named location.
             if event.button == 1:
+
+                if route_popup_visible and POPUP_CLOSE_RECT.collidepoint(event.pos):
+                    route_popup_visible = False
+                    continue
 
                 if searching or path_animation:
                     continue
@@ -1048,6 +1280,12 @@ while running:
     # ========================================================
 
     draw_location_markers()
+
+    # ========================================================
+    # ROUTE INFORMATION POPUP
+    # ========================================================
+
+    draw_route_popup()
 
     # ========================================================
     # STATUS BAR
