@@ -162,6 +162,18 @@ LOCATION_POINTS = {
 }
 
 LOCATION_RADIUS = 24
+# ============================================================
+# MANUAL LOCATION ACCESS POINTS
+# ============================================================
+
+# These are exact 80x80 grid cells where named locations
+# should connect to the road network.
+
+LOCATION_ACCESS = {
+    "Wengen": (7, 10),
+    "Lumber Yard": (66, 50),
+    "Shipyard": (56, 72),
+}
 
 
 def location_to_screen(point):
@@ -710,7 +722,10 @@ def select_location(name):
         LOCATION_POINTS[name]
     )
 
-    road_cell = nearest_road_cell(point)
+    road_cell = LOCATION_ACCESS.get(name)
+
+    if road_cell is None:
+        road_cell = nearest_road_cell(point)
 
     if road_cell is None:
         return
