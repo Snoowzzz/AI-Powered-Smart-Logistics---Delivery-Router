@@ -52,6 +52,18 @@ popup_drag_offset_x = 0
 popup_drag_offset_y = 0
 
 # ============================================================
+# INTERACTIVE ROAD BLOCKING — STAGE 3
+# ============================================================
+# Users can select multiple road cells, review them, and then
+# confirm the blocks. Confirmed blocks are excluded by A*.
+blocked_cells = set()
+pending_block_cells = set()
+block_mode = False
+block_button_rect = pygame.Rect(WIDTH + 20, 515, 160, 38)
+confirm_blocks_rect = pygame.Rect(WIDTH + 195, 515, 145, 38)
+clear_blocks_rect = pygame.Rect(WIDTH + 20, 565, 320, 38)
+
+# ============================================================
 # VEHICLE PROFILES — STAGE 2
 # ============================================================
 # Highway remains 1.00 for every vehicle.
@@ -395,6 +407,11 @@ def get_neighbors(cell):
 
         new_cell = (new_row, new_col)
 
+        # Stage 3: blocked road cells are removed from the graph
+        # for the current routing run.
+        if new_cell in blocked_cells:
+            continue
+
         if new_cell not in road_cells:
             continue
 
@@ -482,6 +499,132 @@ goal_location_name = None
 
 start_reference = None
 goal_reference = None
+
+# ============================================================
+# INTERACTIVE ROAD BLOCKING CONTROLS
+# ============================================================
+
+def toggle_block_mode():
+    global block_mode
+
+    if searching or path_animation:
+        return
+
+    block_mode = not block_mode
+
+
+def confirm_blocks():
+    global block_mode
+
+    if searching or path_animation:
+        return
+
+    if pending_block_cells:
+        blocked_cells.update(pending_block_cells)
+        pending_block_cells.clear()
+
+        # A confirmed map change invalidates any existing route.
+        reset_route()
+
+    block_mode = False
+
+
+def clear_blocks():
+    global block_mode
+
+    if searching or path_animation:
+        return
+
+    blocked_cells.clear()
+    pending_block_cells.clear()
+    block_mode = False
+
+    # The next route should be calculated on the newly unblocked map.
+    reset_route()
+
+
+def draw_block_controls():
+    enabled = not searching and not path_animation
+
+    # Section title
+    draw_text("ROAD BLOCKING", (WIDTH + 20, 475), popup_font)
+
+    if block_mode:
+        instruction = "BLOCK MODE: click road cells"
+        instruction_color = (255, 190, 90)
+    else:
+        instruction = "Block roads before starting a route"
+        instruction_color = (190, 195, 202)
+
+    instruction_surface = popup_small_font.render(
+        instruction, True, instruction_color
+    )
+    screen.blit(instruction_surface, (WIDTH + 20, 495))
+
+    buttons = [
+        (block_button_rect, "BLOCK ROAD", block_mode),
+        (confirm_blocks_rect, "CONFIRM BLOCKS", bool(pending_block_cells)),
+        (clear_blocks_rect, "CLEAR ALL BLOCKS", False),
+    ]
+
+    for rect, label, active in buttons:
+        if not enabled:
+            fill = (42, 46, 52)
+            border = (70, 74, 80)
+            text_color = (125, 130, 136)
+        elif active:
+            fill = (135, 65, 55)
+            border = (255, 150, 120)
+            text_color = (255, 245, 240)
+        else:
+            fill = (45, 50, 58)
+            border = (90, 100, 115)
+            text_color = (240, 242, 245)
+
+        pygame.draw.rect(screen, fill, rect, border_radius=7)
+        pygame.draw.rect(screen, border, rect, 1, border_radius=7)
+
+        text_surface = popup_small_font.render(label, True, text_color)
+        screen.blit(
+            text_surface,
+            (
+                rect.centerx - text_surface.get_width() // 2,
+                rect.centery - text_surface.get_height() // 2,
+            )
+        )
+
+    status = (
+        f"Pending: {len(pending_block_cells)}   "
+        f"Blocked: {len(blocked_cells)}"
+    )
+    status_surface = popup_small_font.render(
+        status, True, (200, 205, 212)
+    )
+    screen.blit(status_surface, (WIDTH + 20, 618))
+
+    hint = "Only road cells can be blocked."
+    hint_surface = popup_small_font.render(
+        hint, True, (155, 160, 168)
+    )
+    screen.blit(hint_surface, (WIDTH + 20, 642))
+
+
+def handle_block_map_click(position):
+    """Select/deselect one road cell while Block Road mode is active."""
+    cell = screen_to_cell(position)
+
+    if cell is None or cell not in road_cells:
+        return
+
+    # Do not allow the currently selected endpoints to be blocked.
+    if cell == start or cell == goal:
+        return
+
+    if cell in pending_block_cells:
+        pending_block_cells.remove(cell)
+    else:
+        pending_block_cells.add(cell)
+
 
 # ============================================================
 # RESET
@@ -955,12 +1098,18 @@ def draw_route_popup():
         (18, 178),
         popup_small_font
     )
+    draw_popup_text(
+        popup,
+        f"Blocked roads: {len(blocked_cells)}",
+        (18, 195),
+        popup_small_font
+    )
 
     pygame.draw.line(
         popup,
         (75, 82, 92),
-        (18, 203),
-        (POPUP_WIDTH - 18, 203),
+        (18, 220),
+        (POPUP_WIDTH - 18, 220),
         1
     )
 
@@ -971,13 +1120,13 @@ def draw_route_popup():
         draw_popup_text(
             popup,
             "Select a destination to start A*.",
-            (18, 222),
+            (18, 239),
             popup_font
         )
         draw_popup_text(
             popup,
             "Vehicle selection will be used for the route.",
-            (18, 256),
+            (18, 273),
             popup_small_font
         )
 
@@ -985,25 +1134,25 @@ def draw_route_popup():
         draw_popup_text(
             popup,
             "A* is searching...",
-            (18, 222),
+            (18, 239),
             popup_font
         )
         draw_popup_text(
             popup,
             f"Explored nodes: {explored}",
-            (18, 256),
+            (18, 273),
             popup_small_font
         )
         draw_popup_text(
             popup,
             f"Open set: {frontier}",
-            (18, 279),
+            (18, 296),
             popup_small_font
         )
         draw_popup_text(
             popup,
             "Vehicle selection is locked during search.",
-            (18, 316),
+            (18, 333),
             popup_small_font
         )
 
@@ -1228,11 +1377,33 @@ while running:
             if event.button == 3:
 
                 reset_route()
+                pending_block_cells.clear()
+                block_mode = False
 
                 continue
 
             # Left click = popup close, popup drag, or named location.
             if event.button == 1:
+
+                # Road-blocking controls live in the right-side panel.
+                if block_button_rect.collidepoint(event.pos):
+                    toggle_block_mode()
+                    continue
+
+                if confirm_blocks_rect.collidepoint(event.pos):
+                    confirm_blocks()
+                    continue
+
+                if clear_blocks_rect.collidepoint(event.pos):
+                    clear_blocks()
+                    continue
+
+                # While Block Road mode is active, map clicks are used
+                # only for selecting road cells, not named locations.
+                if block_mode and event.pos[0] < WIDTH and event.pos[1] < HEIGHT:
+                    if not searching and not path_animation:
+                        handle_block_map_click(event.pos)
+                    continue
 
                 if route_popup_visible:
 
@@ -1346,12 +1517,14 @@ while running:
     screen.blit(side_title, (WIDTH + 20, 770))
 
     # ========================================================
-    # IMPORTANT:
-    # NO HIGHWAY/WEAK ROAD BLOCK OVERLAY.
-    #
-    # The masks are used internally by A*, but the map stays
-    # visually clean so the search animation is easy to see.
+    # DRAW INTERACTIVE ROAD BLOCKS
     # ========================================================
+
+    for cell in blocked_cells:
+        draw_cell(cell, (175, 45, 45), 2)
+
+    for cell in pending_block_cells:
+        draw_cell(cell, (255, 120, 70), 1)
 
     # ========================================================
     # DRAW OPEN SET
@@ -1476,6 +1649,12 @@ while running:
     # ========================================================
 
     draw_location_markers()
+
+    # ========================================================
+    # ROAD BLOCKING CONTROLS
+    # ========================================================
+
+    draw_block_controls()
 
     # ========================================================
     # ROUTE INFORMATION POPUP
