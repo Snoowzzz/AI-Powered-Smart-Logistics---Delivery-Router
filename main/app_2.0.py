@@ -1486,92 +1486,12 @@ while running:
     draw_route_popup()
 
     # ========================================================
-    # STATUS BAR
+    # MAP HAS NO BOTTOM STATUS BAR
     # ========================================================
+    # The full 800x800 map remains visible so the lower named
+    # locations can be selected normally. Route information is
+    # already available in the dedicated panel on the right.
 
-    pygame.draw.rect(
-        screen,
-        (20, 20, 20),
-        (
-            0,
-            730,
-            WIDTH,
-            70
-        )
-    )
-
-    if start_location_name is None:
-
-        status = (
-            "Click a named location for START"
-        )
-
-    elif goal_location_name is None:
-
-        status = (
-            f"Start: {start_location_name}  |  "
-            f"Vehicle: {selected_vehicle}  |  "
-            "Click a named location for DESTINATION"
-        )
-
-    elif searching:
-
-        status = (
-            f"{start_location_name} → "
-            f"{goal_location_name}  |  "
-            f"{selected_vehicle}  |  A* is searching..."
-        )
-
-    elif path_animation:
-
-        status = (
-            f"{start_location_name} → "
-            f"{goal_location_name}  |  "
-            f"{selected_vehicle}  |  Route found — building route..."
-        )
-
-    elif finished:
-
-        status = (
-            f"{start_location_name} → "
-            f"{goal_location_name}  |  "
-            f"{selected_vehicle}  |  Route complete! Right-click to reset."
-        )
-
-    else:
-
-        status = ""
-
-    draw_text(
-        status,
-        (10, 736),
-        small_font
-    )
-
-    # ========================================================
-    # SEARCH STATISTICS
-    # ========================================================
-
-    explored = len(closed_set)
-    frontier = len(open_set)
-
-    if final_path:
-        stats_line_1 = (
-            f"Vehicle: {selected_vehicle}   "
-            f"Explored: {explored}   "
-            f"Distance: {route_distance_m:.0f} m   "
-            f"Weighted Cost: {weighted_route_cost:.2f}"
-        )
-        stats_line_2 = (
-            f"Highway: {highway_distance_m:.0f} m   "
-            f"Weak Road: {weak_distance_m:.0f} m"
-        )
-    else:
-        stats_line_1 = f"Explored: {explored}   Open: {frontier}"
-        stats_line_2 = ""
-
-    draw_text(stats_line_1, (10, 756), small_font)
-    draw_text(stats_line_2, (10, 775), small_font)
 
     # ========================================================
     # DISPLAY
