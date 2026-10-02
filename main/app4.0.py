@@ -21,7 +21,16 @@ pygame.init()
 
 WIDTH = 800
 HEIGHT = 800
-WINDOW_WIDTH = 1180
+
+# Layout:
+#   Left panel  = Route Details
+#   Center      = unchanged 800x800 map
+#   Right panel = road blocking + multi-stop controls
+LEFT_PANEL_WIDTH = 360
+RIGHT_PANEL_WIDTH = 360
+MAP_X = LEFT_PANEL_WIDTH
+RIGHT_PANEL_X = MAP_X + WIDTH
+WINDOW_WIDTH = LEFT_PANEL_WIDTH + WIDTH + RIGHT_PANEL_WIDTH
 
 # The map remains exactly 800x800. The extra window space is used
 # only for the Route Details panel, so map/grid coordinates do not change.
@@ -41,7 +50,7 @@ popup_small_font = pygame.font.SysFont("Arial", 14)
 # remains self-contained and the A* animation stays visible behind it.
 POPUP_WIDTH = 340
 POPUP_HEIGHT = 455
-POPUP_X = WIDTH + 20
+POPUP_X = 10
 POPUP_Y = 18
 
 # The popup can be moved by dragging its header. These values are
@@ -50,6 +59,7 @@ POPUP_Y = 18
 popup_dragging = False
 popup_drag_offset_x = 0
 popup_drag_offset_y = 0
+popup_route_scroll = 0
 
 # ============================================================
 # INTERACTIVE ROAD BLOCKING — STAGE 3
@@ -59,9 +69,33 @@ popup_drag_offset_y = 0
 blocked_cells = set()
 pending_block_cells = set()
 block_mode = False
-block_button_rect = pygame.Rect(WIDTH + 20, 515, 160, 38)
-confirm_blocks_rect = pygame.Rect(WIDTH + 195, 515, 145, 38)
-clear_blocks_rect = pygame.Rect(WIDTH + 20, 565, 320, 38)
+block_button_rect = pygame.Rect(RIGHT_PANEL_X + 20, 275, 150, 38)
+confirm_blocks_rect = pygame.Rect(RIGHT_PANEL_X + 185, 275, 155, 38)
+clear_blocks_rect = pygame.Rect(RIGHT_PANEL_X + 20, 320, 320, 38)
+
+# ============================================================
+# MULTI-STOP ROUTING — STAGE 3 EXTENSION
+# ============================================================
+# The user can build a route plan such as:
+# Start -> Stop 1 -> Stop 2 -> ... -> Destination
+# Each leg reuses the existing A* engine.
+multi_stop_mode = False
+multi_selection_phase = "start"  # start, stops, destination, ready
+multi_route_points = []
+multi_leg_index = 0
+multi_leg_paths = []
+multi_leg_stats = []
+multi_total_distance_m = 0.0
+multi_total_highway_m = 0.0
+multi_total_weak_m = 0.0
+multi_total_weighted_cost = 0.0
+multi_total_explored = 0
+multi_pending_next_leg = False
+
+multi_route_button_rect = pygame.Rect(RIGHT_PANEL_X + 20, 505, 320, 38)
+multi_add_stop_rect = pygame.Rect(RIGHT_PANEL_X + 20, 550, 155, 38)
+multi_set_destination_rect = pygame.Rect(RIGHT_PANEL_X + 185, 550, 155, 38)
+multi_calculate_rect = pygame.Rect(RIGHT_PANEL_X + 20, 595, 320, 42)
 
 # ============================================================
 # VEHICLE PROFILES — STAGE 2
@@ -87,22 +121,27 @@ def set_vehicle(vehicle_name):
     if vehicle_name in VEHICLE_PROFILES and not searching and not path_animation:
         selected_vehicle = vehicle_name
 
-def get_popup_vehicle_button_rects():
-    # Four compact buttons across the popup.
+def get_vehicle_button_rects():
+    # Four buttons in a 2x2 grid in the dedicated right panel.
     names = list(VEHICLE_PROFILES.keys())
     rects = {}
-    button_y = POPUP_Y + 135
-    gap = 8
-    left = POPUP_X + 18
-    total_width = POPUP_WIDTH - 36
-    button_width = (total_width - gap * (len(names) - 1)) // len(names)
+
+    left = RIGHT_PANEL_X + 20
+    top = 62
+    gap = 10
+    button_width = 155
+    button_height = 38
+
     for index, name in enumerate(names):
+        row = index // 2
+        col = index % 2
         rects[name] = pygame.Rect(
-            left + index * (button_width + gap),
-            button_y,
+            left + col * (button_width + gap),
+            top + row * (button_height + gap),
             button_width,
-            34
+            button_height
         )
+
     return rects
 
 def get_popup_rect():
@@ -126,8 +165,15 @@ def get_popup_header_rect():
     )
 
 def clamp_popup_position(x, y):
-    x = max(WIDTH + 10, min(x, WINDOW_WIDTH - POPUP_WIDTH - 10))
-    y = max(0, min(y, HEIGHT - POPUP_HEIGHT))
+    # Route Details can move only inside the dedicated left panel.
+    x = max(
+        10,
+        min(x, LEFT_PANEL_WIDTH - POPUP_WIDTH - 10)
+    )
+    y = max(
+        0,
+        min(y, HEIGHT - POPUP_HEIGHT)
+    )
     return x, y
 
 # ============================================================
@@ -315,7 +361,7 @@ def location_to_screen(point):
 
     x, y = point
 
-    screen_x = int(
+    screen_x = MAP_X + int(
         x * WIDTH / MAP_ORIGINAL_WIDTH
     )
 
@@ -330,6 +376,9 @@ def screen_to_cell(position):
     """Convert displayed-map pixels to an 80x80 cell."""
 
     x, y = position
+
+    # Convert screen coordinates back to map-local coordinates.
+    x -= MAP_X
 
     col = int(x // CELL_SIZE)
     row = int(y // CELL_SIZE)
@@ -453,6 +502,21 @@ def heuristic(a, b):
 
 
 # ============================================================
+# WEIGHTED COST UNITS / A* OPTIMALITY
+# ============================================================
+# Straight move = 1.0 grid-cell unit.
+# Diagonal move = sqrt(2) grid-cell units.
+# Highway multiplier = 1.0.
+# Weak-road multipliers are >= 1.1.
+#
+# Euclidean distance is therefore an admissible/consistent heuristic:
+# every allowed edge costs at least its Euclidean geometric length.
+# The map scale is 2 km / 80 cells = 25 m/cell. Multiplying a
+# weighted cell cost by 25 m is only a unit conversion and does not
+# change which route minimizes the weighted objective.
+# ============================================================
+
+# ============================================================
 # A* STATE
 # ============================================================
 
@@ -544,22 +608,29 @@ def clear_blocks():
 
 
 def draw_block_controls():
+    """Right panel: compact interactive road blocking controls."""
     enabled = not searching and not path_animation
 
-    # Section title
-    draw_text("ROAD BLOCKING", (WIDTH + 20, 475), popup_font)
-
-    if block_mode:
-        instruction = "BLOCK MODE: click road cells"
-        instruction_color = (255, 190, 90)
-    else:
-        instruction = "Block roads before starting a route"
-        instruction_color = (190, 195, 202)
-
-    instruction_surface = popup_small_font.render(
-        instruction, True, instruction_color
+    panel = pygame.Rect(
+        RIGHT_PANEL_X + 10,
+        225,
+        RIGHT_PANEL_WIDTH - 20,
+        220
     )
-    screen.blit(instruction_surface, (WIDTH + 20, 495))
+    draw_panel_box(panel, "ROAD BLOCKING")
+
+    instruction = (
+        "BLOCK MODE: click road cells"
+        if block_mode
+        else "Select road cells before calculating"
+    )
+    color = (255, 190, 90) if block_mode else (190, 195, 202)
+
+    draw_text(
+        instruction,
+        (panel.x + 16, panel.y + 42),
+        popup_small_font
+    )
 
     buttons = [
         (block_button_rect, "BLOCK ROAD", block_mode),
@@ -581,33 +652,41 @@ def draw_block_controls():
             border = (90, 100, 115)
             text_color = (240, 242, 245)
 
-        pygame.draw.rect(screen, fill, rect, border_radius=7)
-        pygame.draw.rect(screen, border, rect, 1, border_radius=7)
+        pygame.draw.rect(
+            screen,
+            fill,
+            rect,
+            border_radius=8
+        )
+        pygame.draw.rect(
+            screen,
+            border,
+            rect,
+            1,
+            border_radius=8
+        )
 
-        text_surface = popup_small_font.render(label, True, text_color)
+        surface = popup_small_font.render(
+            label,
+            True,
+            text_color
+        )
         screen.blit(
-            text_surface,
+            surface,
             (
-                rect.centerx - text_surface.get_width() // 2,
-                rect.centery - text_surface.get_height() // 2,
+                rect.centerx - surface.get_width() // 2,
+                rect.centery - surface.get_height() // 2
             )
         )
 
-    status = (
-        f"Pending: {len(pending_block_cells)}   "
-        f"Blocked: {len(blocked_cells)}"
+    # Keep the status information on one line so it cannot collide with
+    # the Clear All button or the next panel.
+    draw_text(
+        f"Pending: {len(pending_block_cells)}    "
+        f"Confirmed: {len(blocked_cells)}",
+        (panel.x + 16, panel.y + 194),
+        popup_small_font
     )
-    status_surface = popup_small_font.render(
-        status, True, (200, 205, 212)
-    )
-    screen.blit(status_surface, (WIDTH + 20, 618))
-
-    hint = "Only road cells can be blocked."
-    hint_surface = popup_small_font.render(
-        hint, True, (155, 160, 168)
-    )
-    screen.blit(hint_surface, (WIDTH + 20, 642))
-
 
 def handle_block_map_click(position):
     """Select/deselect one road cell while Block Road mode is active."""
@@ -624,6 +703,277 @@ def handle_block_map_click(position):
         pending_block_cells.remove(cell)
     else:
         pending_block_cells.add(cell)
+
+
+# ============================================================
+# MULTI-STOP ROUTING HELPERS
+# ============================================================
+
+def reset_multi_stop_plan():
+    global multi_stop_mode, multi_selection_phase
+    global multi_route_points, multi_leg_index, multi_leg_paths
+    global multi_leg_stats
+    global multi_total_distance_m, multi_total_highway_m
+    global multi_total_weak_m, multi_total_weighted_cost
+    global multi_total_explored, multi_pending_next_leg
+
+    multi_stop_mode = False
+    multi_selection_phase = "start"
+    multi_route_points = []
+    multi_leg_index = 0
+    multi_leg_paths = []
+    multi_leg_stats = []
+    multi_total_distance_m = 0.0
+    multi_total_highway_m = 0.0
+    multi_total_weak_m = 0.0
+    multi_total_weighted_cost = 0.0
+    multi_total_explored = 0
+    multi_pending_next_leg = False
+
+
+def start_multi_stop_mode():
+    global multi_stop_mode, multi_selection_phase, route_popup_visible
+    global popup_route_scroll
+
+    if searching or path_animation:
+        return
+
+    reset_route()
+    reset_multi_stop_plan()
+    multi_stop_mode = True
+    multi_selection_phase = "start"
+    popup_route_scroll = 0
+    route_popup_visible = True
+
+
+def add_multi_stop():
+    global multi_selection_phase
+
+    if not multi_stop_mode or searching or path_animation:
+        return
+
+    if multi_route_points:
+        multi_selection_phase = "stops"
+
+
+def set_multi_destination_mode():
+    global multi_selection_phase
+
+    if not multi_stop_mode or searching or path_animation:
+        return
+
+    if len(multi_route_points) >= 1:
+        multi_selection_phase = "destination"
+
+
+def calculate_multi_stop_route():
+    global multi_selection_phase, multi_leg_index
+    global multi_leg_paths, multi_leg_stats
+    global multi_total_distance_m, multi_total_highway_m
+    global multi_total_weak_m, multi_total_weighted_cost
+    global multi_total_explored, multi_pending_next_leg
+
+    if (
+        not multi_stop_mode
+        or searching
+        or path_animation
+        or len(multi_route_points) < 2
+        or multi_selection_phase != "ready"
+    ):
+        return
+
+    # Start with the first leg. Subsequent legs are launched when
+    # the current leg's route animation finishes.
+    multi_leg_index = 0
+    multi_leg_paths = []
+    multi_leg_stats = []
+    multi_total_distance_m = 0.0
+    multi_total_highway_m = 0.0
+    multi_total_weak_m = 0.0
+    multi_total_weighted_cost = 0.0
+    multi_total_explored = 0
+    multi_pending_next_leg = False
+
+    start_name = multi_route_points[0]
+    goal_name = multi_route_points[1]
+    _set_route_endpoints(start_name, goal_name)
+    start_search(start, goal)
+
+
+def _set_route_endpoints(start_name, goal_name):
+    global start_location_name, goal_location_name
+    global start_reference, goal_reference, start, goal
+
+    start_location_name = start_name
+    goal_location_name = goal_name
+    start_reference = location_to_screen(LOCATION_POINTS[start_name])
+    goal_reference = location_to_screen(LOCATION_POINTS[goal_name])
+    start = LOCATION_ACCESS[start_name]
+    goal = LOCATION_ACCESS[goal_name]
+
+
+def advance_multi_stop_leg():
+    global multi_leg_index, multi_pending_next_leg
+    global multi_total_distance_m, multi_total_highway_m
+    global multi_total_weak_m, multi_total_weighted_cost
+    global multi_total_explored
+
+    # Save the completed leg before moving to the next one.
+    leg_number = multi_leg_index
+    leg_path = list(final_path)
+    leg_stats = {
+        "from": multi_route_points[leg_number],
+        "to": multi_route_points[leg_number + 1],
+        "distance": route_distance_m,
+        "highway": highway_distance_m,
+        "weak": weak_distance_m,
+        "cost": weighted_route_cost,
+        "explored": len(closed_set),
+    }
+    multi_leg_paths.append(leg_path)
+    multi_leg_stats.append(leg_stats)
+    multi_total_distance_m += route_distance_m
+    multi_total_highway_m += highway_distance_m
+    multi_total_weak_m += weak_distance_m
+    multi_total_weighted_cost += weighted_route_cost
+    multi_total_explored += len(closed_set)
+
+    multi_leg_index += 1
+
+    if multi_leg_index >= len(multi_route_points) - 1:
+        # Entire multi-stop route is complete.
+        multi_pending_next_leg = False
+        return
+
+    next_start = multi_route_points[multi_leg_index]
+    next_goal = multi_route_points[multi_leg_index + 1]
+    _set_route_endpoints(next_start, next_goal)
+    start_search(start, goal)
+    multi_pending_next_leg = False
+
+
+def draw_multi_stop_controls():
+    """Right panel: multi-stop route planning controls."""
+    enabled = not searching and not path_animation
+
+    panel = pygame.Rect(
+        RIGHT_PANEL_X + 10,
+        455,
+        RIGHT_PANEL_WIDTH - 20,
+        335
+    )
+    draw_panel_box(panel, "ROUTE CONTROLS")
+
+    # Buttons are arranged as a simple workflow.
+    buttons = [
+        (multi_route_button_rect, "NEW MULTI-STOP PLAN", multi_stop_mode),
+        (multi_add_stop_rect, "ADD STOP", multi_selection_phase == "stops"),
+        (multi_set_destination_rect, "SET DESTINATION", multi_selection_phase == "destination"),
+        (multi_calculate_rect, "CALCULATE ROUTE", multi_selection_phase == "ready"),
+    ]
+
+    for rect, label, active in buttons:
+        if not enabled:
+            fill = (42, 46, 52)
+            border = (70, 74, 80)
+            text_color = (125, 130, 136)
+        elif active:
+            fill = (55, 115, 170)
+            border = (120, 190, 255)
+            text_color = (245, 245, 245)
+        else:
+            fill = (45, 50, 58)
+            border = (90, 100, 115)
+            text_color = (240, 242, 245)
+
+        pygame.draw.rect(
+            screen,
+            fill,
+            rect,
+            border_radius=8
+        )
+        pygame.draw.rect(
+            screen,
+            border,
+            rect,
+            1,
+            border_radius=8
+        )
+
+        surface = popup_small_font.render(
+            label,
+            True,
+            text_color
+        )
+        screen.blit(
+            surface,
+            (
+                rect.centerx - surface.get_width() // 2,
+                rect.centery - surface.get_height() // 2
+            )
+        )
+
+    # Workflow text is positioned relative to this panel.
+    # The previous version used absolute screen Y values here,
+    # which caused the text to overlap the Road Blocking panel.
+    workflow_title_y = panel.y + 178
+
+    pygame.draw.line(
+        screen,
+        (55, 66, 80),
+        (panel.x + 16, workflow_title_y - 8),
+        (panel.right - 16, workflow_title_y - 8),
+        1
+    )
+    draw_text(
+        "WORKFLOW",
+        (panel.x + 16, workflow_title_y),
+        popup_small_font
+    )
+
+    workflow = [
+        "1  Start → click a named location",
+        "2  Add Stop → click locations in order",
+        "3  Set Destination → click final location",
+        "4  Calculate Route → A* runs each leg",
+    ]
+
+    y = workflow_title_y + 25
+    for line in workflow:
+        draw_text(
+            line,
+            (panel.x + 16, y),
+            popup_small_font
+        )
+        y += 23
+
+    status_y = panel.y + 302
+    if multi_stop_mode:
+        phase = {
+            "start": "Waiting for start",
+            "stops": "Adding stops",
+            "destination": "Waiting for destination",
+            "ready": "Ready to calculate",
+        }.get(multi_selection_phase, "Multi-stop active")
+    else:
+        phase = "Single-route mode"
+
+    draw_text(
+        f"Status: {phase}",
+        (panel.x + 16, status_y),
+        popup_small_font
+    )
+
+
+def draw_scrollable_multi_stop_plan(popup):
+    # Kept for compatibility with existing state; the new UI does
+    # not use a floating or scrollable route popup.
+    return
+
+
+def handle_popup_scroll(mouse_position, wheel_y):
+    # Scrolling is no longer needed in the final three-panel layout.
+    return
 
 
 # ============================================================
@@ -808,6 +1158,7 @@ def calculate_route_statistics():
     route_distance_m = route * CELL_SIZE_KM * 1000
     highway_distance_m = highway * CELL_SIZE_KM * 1000
     weak_distance_m = weak * CELL_SIZE_KM * 1000
+    # A* stores weighted cost in grid-cell units.
     weighted_route_cost = g_score.get(goal, 0.0)
 
 
@@ -911,7 +1262,7 @@ def draw_cell(
 
     row, col = cell
 
-    x = col * CELL_SIZE
+    x = MAP_X + col * CELL_SIZE
     y = row * CELL_SIZE
 
     pygame.draw.rect(
@@ -962,283 +1313,10 @@ def draw_popup_text(surface, text, position, text_font, center=False):
     surface.blit(text_surface, (x, position[1]))
 
 
-def draw_route_popup():
-    """Draw the draggable route/search/vehicle information panel."""
-    if not route_popup_visible:
-        return
-
-    popup_rect = get_popup_rect()
-    close_rect = get_popup_close_rect()
-
-    popup = pygame.Surface(
-        (POPUP_WIDTH, POPUP_HEIGHT),
-        pygame.SRCALPHA
-    )
-
-    pygame.draw.rect(
-        popup,
-        (12, 16, 22, 238),
-        popup.get_rect(),
-        border_radius=14
-    )
-    pygame.draw.rect(
-        popup,
-        (90, 100, 115, 255),
-        popup.get_rect(),
-        2,
-        border_radius=14
-    )
-
-    # Header / drag handle
-    draw_popup_text(
-        popup,
-        "ROUTE DETAILS",
-        (18, 16),
-        popup_title_font
-    )
-    draw_popup_text(
-        popup,
-        "Drag header to move",
-        (18, 39),
-        popup_small_font
-    )
-
-    close_local = pygame.Rect(
-        close_rect.x - POPUP_X,
-        close_rect.y - POPUP_Y,
-        close_rect.width,
-        close_rect.height
-    )
-    pygame.draw.rect(
-        popup,
-        (45, 50, 58, 255),
-        close_local,
-        border_radius=7
-    )
-    pygame.draw.line(
-        popup, (220, 220, 220),
-        (close_local.x + 8, close_local.y + 8),
-        (close_local.right - 8, close_local.bottom - 8),
-        2
-    )
-    pygame.draw.line(
-        popup, (220, 220, 220),
-        (close_local.right - 8, close_local.y + 8),
-        (close_local.x + 8, close_local.bottom - 8),
-        2
-    )
-
-    if start_location_name is not None:
-        draw_popup_text(
-            popup,
-            f"From: {start_location_name}",
-            (18, 66),
-            popup_font
-        )
-
-    if goal_location_name is not None:
-        draw_popup_text(
-            popup,
-            f"To: {goal_location_name}",
-            (18, 91),
-            popup_font
-        )
-    else:
-        draw_popup_text(
-            popup,
-            "To: Select destination on map",
-            (18, 91),
-            popup_small_font
-        )
-
-    pygame.draw.line(
-        popup,
-        (75, 82, 92),
-        (18, 116),
-        (POPUP_WIDTH - 18, 116),
-        1
-    )
-
-    # Vehicle selection is available before the search starts.
-    draw_popup_text(
-        popup,
-        "Vehicle",
-        (18, 126),
-        popup_small_font
-    )
-
-    button_rects = get_popup_vehicle_button_rects()
-    vehicle_button_rects.clear()
-    vehicle_button_rects.update(button_rects)
-
-    for vehicle_name, rect in button_rects.items():
-        local = rect.move(-POPUP_X, -POPUP_Y)
-        selected = vehicle_name == selected_vehicle
-        enabled = not searching and not path_animation
-        fill = (55, 115, 170, 255) if selected else (45, 50, 58, 255)
-        border = (120, 190, 255, 255) if selected else (90, 100, 115, 255)
-        if not enabled:
-            fill = (38, 42, 48, 255)
-            border = (65, 70, 78, 255)
-        pygame.draw.rect(popup, fill, local, border_radius=7)
-        pygame.draw.rect(popup, border, local, 1, border_radius=7)
-        text_color = (245, 245, 245) if enabled or selected else (150, 155, 160)
-        text_surface = popup_small_font.render(vehicle_name, True, text_color)
-        popup.blit(
-            text_surface,
-            (
-                local.centerx - text_surface.get_width() // 2,
-                local.centery - text_surface.get_height() // 2
-            )
-        )
-
-    draw_popup_text(
-        popup,
-        f"Weak-road multiplier: {get_selected_vehicle_multiplier():.2f}",
-        (18, 178),
-        popup_small_font
-    )
-    draw_popup_text(
-        popup,
-        f"Blocked roads: {len(blocked_cells)}",
-        (18, 195),
-        popup_small_font
-    )
-
-    pygame.draw.line(
-        popup,
-        (75, 82, 92),
-        (18, 220),
-        (POPUP_WIDTH - 18, 220),
-        1
-    )
-
-    explored = len(closed_set)
-    frontier = len(open_set)
-
-    if start_location_name is not None and goal_location_name is None:
-        draw_popup_text(
-            popup,
-            "Select a destination to start A*.",
-            (18, 239),
-            popup_font
-        )
-        draw_popup_text(
-            popup,
-            "Vehicle selection will be used for the route.",
-            (18, 273),
-            popup_small_font
-        )
-
-    elif searching:
-        draw_popup_text(
-            popup,
-            "A* is searching...",
-            (18, 239),
-            popup_font
-        )
-        draw_popup_text(
-            popup,
-            f"Explored nodes: {explored}",
-            (18, 273),
-            popup_small_font
-        )
-        draw_popup_text(
-            popup,
-            f"Open set: {frontier}",
-            (18, 296),
-            popup_small_font
-        )
-        draw_popup_text(
-            popup,
-            "Vehicle selection is locked during search.",
-            (18, 333),
-            popup_small_font
-        )
-
-    elif path_animation:
-        draw_popup_text(
-            popup,
-            "Route found — drawing route...",
-            (18, 222),
-            popup_font
-        )
-        draw_popup_text(
-            popup,
-            f"Explored nodes: {explored}",
-            (18, 256),
-            popup_small_font
-        )
-
-    elif finished and final_path:
-        draw_popup_text(
-            popup,
-            "Route complete",
-            (18, 222),
-            popup_font
-        )
-        draw_popup_text(
-            popup,
-            f"Vehicle: {selected_vehicle}",
-            (18, 250),
-            popup_small_font
-        )
-        draw_popup_text(
-            popup,
-            f"Explored: {explored}",
-            (18, 276),
-            popup_small_font
-        )
-        draw_popup_text(
-            popup,
-            f"Distance: {route_distance_m:.0f} m",
-            (18, 299),
-            popup_small_font
-        )
-        draw_popup_text(
-            popup,
-            f"Weighted Cost: {weighted_route_cost:.2f}",
-            (18, 322),
-            popup_small_font
-        )
-        draw_popup_text(
-            popup,
-            f"Highway: {highway_distance_m:.0f} m",
-            (18, 345),
-            popup_small_font
-        )
-        draw_popup_text(
-            popup,
-            f"Weak Road: {weak_distance_m:.0f} m",
-            (18, 368),
-            popup_small_font
-        )
-        pygame.draw.line(
-            popup,
-            (75, 82, 92),
-            (18, 397),
-            (POPUP_WIDTH - 18, 397),
-            1
-        )
-        draw_popup_text(
-            popup,
-            "Select a new location to start another route.",
-            (18, 410),
-            popup_small_font
-        )
-
-    screen.blit(popup, (POPUP_X, POPUP_Y))
-
-
-# ============================================================
-# DRAW NAMED LOCATION MARKERS
-# ============================================================
-
 def draw_location_markers():
-
+    """Draw named-location reference markers and selected endpoints."""
     # Neutral reference points remain small and unobtrusive.
     for name, point in LOCATION_POINTS.items():
-
         x, y = location_to_screen(point)
 
         pygame.draw.circle(
@@ -1250,7 +1328,6 @@ def draw_location_markers():
         )
 
     if start_location_name is not None:
-
         x, y = location_to_screen(
             LOCATION_POINTS[start_location_name]
         )
@@ -1264,7 +1341,6 @@ def draw_location_markers():
         )
 
     if goal_location_name is not None:
-
         x, y = location_to_screen(
             LOCATION_POINTS[goal_location_name]
         )
@@ -1278,77 +1354,368 @@ def draw_location_markers():
         )
 
 
-# ============================================================
-# SELECT NAMED LOCATION
-# ============================================================
-
-def select_location(name):
-
-    global start_location_name
-    global goal_location_name
-
-    global start_reference
-    global goal_reference
-
-    global start
-    global goal
-    global final_path
-    global finished
-    global route_popup_visible
-
-    point = location_to_screen(
-        LOCATION_POINTS[name]
+def draw_panel_box(rect, title):
+    """Draw a reusable application panel/card."""
+    pygame.draw.rect(
+        screen,
+        (15, 19, 25),
+        rect,
+        border_radius=12
+    )
+    pygame.draw.rect(
+        screen,
+        (70, 80, 95),
+        rect,
+        1,
+        border_radius=12
     )
 
-    # Use the exact access cell selected for this named location.
-    # No nearest-road guessing is used anymore.
+    draw_text(
+        title,
+        (rect.x + 16, rect.y + 12),
+        popup_font
+    )
+
+
+def draw_route_plan_panel():
+    """Left panel: clean delivery itinerary."""
+    panel = pygame.Rect(10, 10, LEFT_PANEL_WIDTH - 20, 410)
+    draw_panel_box(panel, "ROUTE PLANNER")
+
+    y = panel.y + 52
+
+    # Start
+    pygame.draw.circle(screen, (40, 170, 255), (panel.x + 22, y + 8), 7)
+    draw_text("START", (panel.x + 40, y - 2), popup_small_font)
+    draw_text(
+        start_location_name or "Select on map",
+        (panel.x + 40, y + 18),
+        popup_font
+    )
+    y += 62
+
+    # Stops
+    draw_text("STOPS", (panel.x + 16, y), popup_small_font)
+    y += 25
+
+    stop_names = (
+        multi_route_points[1:-1]
+        if multi_stop_mode and len(multi_route_points) >= 2
+        else []
+    )
+
+    if stop_names:
+        max_visible = 8
+        for index, name in enumerate(stop_names[:max_visible], start=1):
+            pygame.draw.circle(
+                screen, (255, 190, 50), (panel.x + 22, y + 8), 8
+            )
+            number_surface = popup_small_font.render(
+                str(index), True, (20, 22, 26)
+            )
+            screen.blit(
+                number_surface,
+                (
+                    panel.x + 22 - number_surface.get_width() // 2,
+                    y + 8 - number_surface.get_height() // 2
+                )
+            )
+            draw_text(name, (panel.x + 42, y), popup_small_font)
+            y += 26
+
+        if len(stop_names) > max_visible:
+            draw_text(
+                f"+ {len(stop_names) - max_visible} more stops",
+                (panel.x + 42, y),
+                popup_small_font
+            )
+            y += 26
+    else:
+        draw_text("No stops added", (panel.x + 40, y), popup_small_font)
+        y += 26
+
+    y += 10
+
+    # Destination
+    pygame.draw.circle(screen, (255, 75, 75), (panel.x + 22, y + 8), 7)
+    draw_text("DESTINATION", (panel.x + 40, y - 2), popup_small_font)
+    draw_text(
+        goal_location_name or "Select on map",
+        (panel.x + 40, y + 18),
+        popup_font
+    )
+
+    # Planning instruction
+    pygame.draw.line(
+        screen,
+        (55, 66, 80),
+        (panel.x + 16, panel.bottom - 58),
+        (panel.right - 16, panel.bottom - 58),
+        1
+    )
+
+    if multi_stop_mode:
+        phase_text = {
+            "start": "Choose a start location",
+            "stops": "Add stops in the order you want to visit",
+            "destination": "Choose the final destination",
+            "ready": "Plan ready — calculate route",
+        }.get(multi_selection_phase, "Multi-stop planning active")
+    else:
+        phase_text = (
+            "Choose a start location"
+            if start_location_name is None
+            else "Choose a destination"
+            if goal_location_name is None
+            else "Route ready"
+        )
+
+    draw_text(
+        phase_text,
+        (panel.x + 16, panel.bottom - 43),
+        popup_small_font
+    )
+
+def draw_route_summary_panel():
+    """Left panel: compact but readable route analytics."""
+    panel = pygame.Rect(10, 432, LEFT_PANEL_WIDTH - 20, HEIGHT - 442)
+    draw_panel_box(panel, "ROUTE SUMMARY")
+
+    y = panel.y + 50
+
+    if searching:
+        status = "A* SEARCHING"
+        status_value = f"Explored {len(closed_set)} nodes"
+    elif path_animation:
+        status = "DRAWING ROUTE"
+        status_value = f"{len(final_path)} path cells"
+    elif finished and final_path:
+        status = (
+            "MULTI-STOP COMPLETE"
+            if multi_stop_mode and multi_leg_stats
+            else "ROUTE COMPLETE"
+        )
+        status_value = f"Vehicle: {selected_vehicle}"
+    else:
+        status = "READY"
+        status_value = "Select locations to begin"
+
+    draw_text(status, (panel.x + 18, y), popup_font)
+    draw_text(status_value, (panel.x + 18, y + 23), popup_small_font)
+    y += 58
+
+    if multi_stop_mode and multi_leg_stats:
+        distance = multi_total_distance_m
+        cost = multi_total_weighted_cost
+        explored = multi_total_explored
+        legs = len(multi_leg_stats)
+        highway = multi_total_highway_m
+        weak = multi_total_weak_m
+    else:
+        distance = route_distance_m if finished else 0
+        cost = weighted_route_cost if finished else 0
+        explored = len(closed_set)
+        legs = 1 if finished and final_path else 0
+        highway = highway_distance_m if finished else 0
+        weak = weak_distance_m if finished else 0
+
+    cards = [
+        ("DISTANCE", f"{distance:.0f} m"),
+        ("WEIGHTED COST", f"{cost:.2f}"),
+        ("EXPLORED", f"{explored} nodes"),
+        ("LEGS", str(legs)),
+    ]
+
+    card_w = (panel.width - 48) // 2
+    card_h = 64
+
+    for index, (label, value) in enumerate(cards):
+        col = index % 2
+        row = index // 2
+        rect = pygame.Rect(
+            panel.x + 16 + col * (card_w + 16),
+            y + row * (card_h + 10),
+            card_w,
+            card_h
+        )
+        pygame.draw.rect(screen, (24, 30, 38), rect, border_radius=9)
+        pygame.draw.rect(
+            screen, (55, 66, 80), rect, 1, border_radius=9
+        )
+        draw_text(label, (rect.x + 10, rect.y + 8), popup_small_font)
+        draw_text(value, (rect.x + 10, rect.y + 31), popup_font)
+
+    y += 138
+
+    draw_text("ROAD USAGE", (panel.x + 18, y), popup_small_font)
+    y += 26
+
+    for label, value in [("Highway", highway), ("Weak road", weak)]:
+        draw_text(label, (panel.x + 20, y), popup_small_font)
+        draw_text(f"{value:.0f} m", (panel.right - 85, y), popup_small_font)
+        y += 25
+
+    y += 7
+    weighted_m = cost * CELL_SIZE_KM * 1000
+    draw_text(
+        f"Weighted distance equivalent: {weighted_m:.0f} m",
+        (panel.x + 18, y),
+        popup_small_font
+    )
+
+    # Ordered legs are shown in ROUTE PLANNER; this panel stays focused
+    # on numerical analytics so the lower area remains uncluttered.
+
+def draw_vehicle_controls():
+    """Right panel: vehicle selection and current vehicle state."""
+    panel = pygame.Rect(
+        RIGHT_PANEL_X + 10,
+        10,
+        RIGHT_PANEL_WIDTH - 20,
+        205
+    )
+    draw_panel_box(panel, "VEHICLE PROFILE")
+
+    draw_text(
+        "Choose how weak roads are weighted.",
+        (panel.x + 16, 42),
+        popup_small_font
+    )
+
+    button_rects = get_vehicle_button_rects()
+    vehicle_button_rects.clear()
+    vehicle_button_rects.update(button_rects)
+
+    for name, rect in button_rects.items():
+        selected = name == selected_vehicle
+        enabled = not searching and not path_animation
+
+        fill = (55, 115, 170) if selected else (42, 48, 58)
+        border = (120, 190, 255) if selected else (85, 95, 110)
+
+        if not enabled:
+            fill = (35, 40, 47)
+            border = (65, 70, 78)
+
+        pygame.draw.rect(
+            screen,
+            fill,
+            rect,
+            border_radius=8
+        )
+        pygame.draw.rect(
+            screen,
+            border,
+            rect,
+            1,
+            border_radius=8
+        )
+
+        surface = popup_small_font.render(
+            name,
+            True,
+            (245, 245, 245)
+        )
+        screen.blit(
+            surface,
+            (
+                rect.centerx - surface.get_width() // 2,
+                rect.centery - surface.get_height() // 2
+            )
+        )
+
+    pygame.draw.line(
+        screen,
+        (55, 66, 80),
+        (panel.x + 16, 150),
+        (panel.right - 16, 150),
+        1
+    )
+    draw_text(
+        f"Vehicle: {selected_vehicle}",
+        (panel.x + 16, 158),
+        popup_small_font
+    )
+    draw_text(
+        f"Weak-road cost: {get_selected_vehicle_multiplier():.2f}×",
+        (panel.x + 16, 182),
+        popup_small_font
+    )
+
+
+def draw_route_popup():
+    """Compatibility wrapper: draw the new left-side information layout."""
+    draw_route_plan_panel()
+    draw_route_summary_panel()
+
+
+def select_location(name):
+    global start_location_name, goal_location_name
+    global start_reference, goal_reference
+    global start, goal, final_path, finished, route_popup_visible
+    global multi_selection_phase
+
+    point = location_to_screen(LOCATION_POINTS[name])
     road_cell = LOCATION_ACCESS[name]
 
-    if start_location_name is None:
+    # Multi-stop planning mode: clicks build the ordered list instead
+    # of immediately launching a single-leg route.
+    if multi_stop_mode:
+        if multi_selection_phase == "start":
+            multi_route_points.clear()
+            multi_route_points.append(name)
+            multi_selection_phase = "stops"
+            _set_route_endpoints(name, name)
+            goal = None
+            goal_location_name = None
+            final_path.clear()
+            finished = False
+            route_popup_visible = True
+            return
 
-        start_location_name = name
-        start_reference = point
+        if multi_selection_phase == "stops":
+            if name != multi_route_points[-1]:
+                multi_route_points.append(name)
+            return
 
-        start = road_cell
-        goal = None
-
-        goal_location_name = None
-        goal_reference = None
-
-        final_path = []
-        finished = False
-        route_popup_visible = True
+        if multi_selection_phase == "destination":
+            if len(multi_route_points) >= 1 and name != multi_route_points[-1]:
+                multi_route_points.append(name)
+                multi_selection_phase = "ready"
+            return
 
         return
 
-    if goal_location_name is None:
+    # Original single-route behavior remains unchanged when multi-stop
+    # mode is not active.
+    if start_location_name is None:
+        start_location_name = name
+        start_reference = point
+        start = road_cell
+        goal = None
+        goal_location_name = None
+        goal_reference = None
+        final_path = []
+        finished = False
+        route_popup_visible = True
+        return
 
+    if goal_location_name is None:
         if name == start_location_name:
             return
-
         goal_location_name = name
         goal_reference = point
-
         goal = road_cell
-
-        start_search(
-            start,
-            goal
-        )
-
+        start_search(start, goal)
         return
 
     start_location_name = name
     start_reference = point
     route_popup_visible = True
-
     start = road_cell
-
     goal = None
-
     goal_location_name = None
     goal_reference = None
-
     final_path = []
     finished = False
 
@@ -1398,55 +1765,65 @@ while running:
                     clear_blocks()
                     continue
 
-                # While Block Road mode is active, map clicks are used
-                # only for selecting road cells, not named locations.
-                if block_mode and event.pos[0] < WIDTH and event.pos[1] < HEIGHT:
-                    if not searching and not path_animation:
-                        handle_block_map_click(event.pos)
+                if multi_route_button_rect.collidepoint(event.pos):
+                    start_multi_stop_mode()
                     continue
 
-                if route_popup_visible:
+                if multi_add_stop_rect.collidepoint(event.pos):
+                    add_multi_stop()
+                    continue
 
-                    if get_popup_close_rect().collidepoint(event.pos):
-                        route_popup_visible = False
-                        continue
+                if multi_set_destination_rect.collidepoint(event.pos):
+                    set_multi_destination_mode()
+                    continue
 
-                    if get_popup_header_rect().collidepoint(event.pos):
-                        popup_dragging = True
-                        popup_drag_offset_x = event.pos[0] - POPUP_X
-                        popup_drag_offset_y = event.pos[1] - POPUP_Y
-                        continue
+                if multi_calculate_rect.collidepoint(event.pos):
+                    calculate_multi_stop_route()
+                    continue
 
-                    vehicle_clicked = False
-                    for vehicle_name, vehicle_rect in vehicle_button_rects.items():
-                        if vehicle_rect.collidepoint(event.pos):
-                            set_vehicle(vehicle_name)
-                            vehicle_clicked = True
-                            break
+                # Vehicle buttons are in the right panel.
+                vehicle_clicked = False
+                for vehicle_name, vehicle_rect in vehicle_button_rects.items():
+                    if vehicle_rect.collidepoint(event.pos):
+                        set_vehicle(vehicle_name)
+                        vehicle_clicked = True
+                        break
 
-                    if vehicle_clicked:
-                        continue
+                if vehicle_clicked:
+                    continue
 
                 if searching or path_animation:
                     continue
 
-                location_name = find_clicked_location(
-                    event.pos
-                )
+                # Map clicks have two different meanings:
+                #   Block mode ON  -> select/deselect a road cell.
+                #   Block mode OFF -> select a named location.
+                if (
+                    MAP_X <= event.pos[0] < MAP_X + WIDTH
+                    and 0 <= event.pos[1] < HEIGHT
+                ):
+                    if block_mode:
+                        handle_block_map_click(event.pos)
+                    else:
+                        location_name = find_clicked_location(
+                            event.pos
+                        )
 
-                if location_name is not None:
+                        if location_name is not None:
+                            select_location(location_name)
 
-                    select_location(
-                        location_name
-                    )
+                    continue
+
+        elif event.type == pygame.MOUSEWHEEL:
+
+            handle_popup_scroll(
+                pygame.mouse.get_pos(),
+                event.y
+            )
 
         elif event.type == pygame.MOUSEMOTION:
-
-            if popup_dragging:
-                POPUP_X, POPUP_Y = clamp_popup_position(
-                    event.pos[0] - popup_drag_offset_x,
-                    event.pos[1] - popup_drag_offset_y
-                )
+            # The final UI uses fixed panels; no floating popup dragging.
+            pass
 
         elif event.type == pygame.MOUSEBUTTONUP:
 
@@ -1493,28 +1870,52 @@ while running:
 
                 finished = True
 
+                if multi_stop_mode and multi_selection_phase == "ready":
+                    if multi_leg_index < len(multi_route_points) - 1:
+                        advance_multi_stop_leg()
+
     # ========================================================
     # DRAW MAP
     # ========================================================
 
-    # Keep the map at its original 800x800 size. The right side is
-    # a separate UI area for Route Details and does not affect routing.
+    # Keep the map at its original 800x800 size. The left side is
+    # Route Details and the right side contains route controls.
     screen.fill((18, 22, 28))
     screen.blit(
         map_image,
-        (0, 0)
+        (MAP_X, 0)
     )
 
+    # Left panel background.
     pygame.draw.rect(
         screen,
         (28, 33, 40),
-        (WIDTH, 0, WINDOW_WIDTH - WIDTH, HEIGHT)
+        (0, 0, LEFT_PANEL_WIDTH, HEIGHT)
     )
 
-    side_title = popup_title_font.render(
-        "ROUTE PANEL", True, (220, 225, 232)
+    # Right controls panel background.
+    pygame.draw.rect(
+        screen,
+        (28, 33, 40),
+        (RIGHT_PANEL_X, 0, RIGHT_PANEL_WIDTH, HEIGHT)
     )
-    screen.blit(side_title, (WIDTH + 20, 770))
+
+
+    # Panel dividers keep the three areas visually separate.
+    pygame.draw.line(
+        screen,
+        (65, 72, 82),
+        (LEFT_PANEL_WIDTH, 0),
+        (LEFT_PANEL_WIDTH, HEIGHT),
+        2
+    )
+    pygame.draw.line(
+        screen,
+        (65, 72, 82),
+        (RIGHT_PANEL_X, 0),
+        (RIGHT_PANEL_X, HEIGHT),
+        2
+    )
 
     # ========================================================
     # DRAW INTERACTIVE ROAD BLOCKS
@@ -1575,38 +1976,26 @@ while running:
     # ========================================================
     # DRAW FINAL ROUTE AS A LINE
     #
-    # No yellow route blocks.
-    # The route is drawn as a connected line over the map.
+    # In multi-stop mode, completed legs stay visible while the
+    # current leg animates.
     # ========================================================
 
+    paths_to_draw = []
+
+    if multi_stop_mode and multi_leg_paths:
+        paths_to_draw.extend(multi_leg_paths)
+
     if final_path and path_index > 0:
+        paths_to_draw.append(final_path[:path_index + 1])
 
-        visible_path = final_path[
-            :path_index + 1
-        ]
-
+    for route_path in paths_to_draw:
         points = []
-
-        for row, col in visible_path:
-
-            x = (
-                col * CELL_SIZE
-                +
-                CELL_SIZE // 2
-            )
-
-            y = (
-                row * CELL_SIZE
-                +
-                CELL_SIZE // 2
-            )
-
-            points.append(
-                (x, y)
-            )
+        for row, col in route_path:
+            x = MAP_X + col * CELL_SIZE + CELL_SIZE // 2
+            y = row * CELL_SIZE + CELL_SIZE // 2
+            points.append((x, y))
 
         if len(points) >= 2:
-
             pygame.draw.lines(
                 screen,
                 (255, 230, 0),
@@ -1614,15 +2003,8 @@ while running:
                 points,
                 4
             )
-
         elif len(points) == 1:
-
-            pygame.draw.circle(
-                screen,
-                (255, 230, 0),
-                points[0],
-                3
-            )
+            pygame.draw.circle(screen, (255, 230, 0), points[0], 3)
 
     # ========================================================
     # DRAW START / GOAL ROAD CELLS
@@ -1650,17 +2032,44 @@ while running:
 
     draw_location_markers()
 
+    # Small map legend / live mode indicator.
+    if block_mode:
+        draw_text(
+            "BLOCK MODE — click road cells",
+            (MAP_X + 18, 16),
+            popup_small_font
+        )
+    elif multi_stop_mode:
+        draw_text(
+            "MULTI-STOP — follow the planner on the left",
+            (MAP_X + 18, 16),
+            popup_small_font
+        )
+
+    # Numbered multi-stop markers make the planned order visible.
+    if multi_stop_mode:
+        for index, name in enumerate(multi_route_points):
+            x, y = location_to_screen(LOCATION_POINTS[name])
+            pygame.draw.circle(screen, (255, 190, 50), (x, y), 10, 2)
+            number_surface = popup_small_font.render(str(index + 1), True, (255, 255, 255))
+            screen.blit(number_surface, (
+                x - number_surface.get_width() // 2,
+                y - number_surface.get_height() // 2,
+            ))
+
     # ========================================================
     # ROAD BLOCKING CONTROLS
     # ========================================================
 
+    draw_vehicle_controls()
     draw_block_controls()
+    draw_multi_stop_controls()
 
     # ========================================================
-    # ROUTE INFORMATION POPUP
+    # ROUTE INFORMATION / SUMMARY
     # ========================================================
-    # The popup lives in the dedicated panel to the right of the map.
-    # It remains draggable within that panel.
+    # Route information is integrated into the left planning panel;
+    # there is no floating popup covering the map.
 
     draw_route_popup()
 
@@ -1679,4 +2088,6 @@ while running:
     pygame.display.flip()
 
     clock.tick(60)
+
+
 pygame.quit()
