@@ -2,6 +2,7 @@ import pygame
 import heapq
 import math
 import time
+from collections import deque
 
 pygame.init()
 
@@ -66,6 +67,7 @@ popup_dragging = False
 popup_drag_offset_x = 0
 popup_drag_offset_y = 0
 popup_route_scroll = 0
+route_plan_scroll = 0
 
 # ============================================================
 # INTERACTIVE ROAD BLOCKING — STAGE 3
@@ -96,6 +98,8 @@ multi_total_highway_m = 0.0
 multi_total_weak_m = 0.0
 multi_total_weighted_cost = 0.0
 multi_total_explored = 0
+multi_total_dijkstra_explored = 0
+multi_total_dijkstra_cost = 0.0
 multi_pending_next_leg = False
 
 multi_route_button_rect = pygame.Rect(RIGHT_PANEL_X + 20, 492, 320, 40)
@@ -507,6 +511,90 @@ def heuristic(a, b):
     )
 
 
+def calculate_planning_distance(start_cell, goal_cell):
+    """Return the straight-line distance between two grid cells in metres."""
+    if start_cell is None or goal_cell is None:
+        return 0.0
+
+    row1, col1 = start_cell
+    row2, col2 = goal_cell
+    cell_distance = math.sqrt(
+        (row2 - row1) ** 2 + (col2 - col1) ** 2
+    )
+    return cell_distance * CELL_SIZE_KM * 1000
+
+
+def get_route_distance_class(distance_m):
+    """Classify the preview distance for animation pacing."""
+    if distance_m <= 0:
+        return "NONE"
+    if distance_m <= SHORT_ROUTE_MAX_M:
+        return "SHORT"
+    if distance_m <= MEDIUM_ROUTE_MAX_M:
+        return "MEDIUM"
+    return "LONG"
+
+
+def get_animation_profile(distance_m):
+    """Choose visual animation speed from route distance and road blocks."""
+    distance_class = get_route_distance_class(distance_m)
+
+    # Keep the current faster pacing when confirmed road blocks are present.
+    # Those searches naturally feel more interesting because A* has to
+    # explore/backtrack around the blocked sections.
+    if blocked_cells:
+        if distance_class == "SHORT":
+            return distance_class, 0.055, 1, 0.045
+        if distance_class == "MEDIUM":
+            return distance_class, 0.045, 3, 0.028
+        if distance_class == "LONG":
+            return distance_class, 0.035, 7, 0.016
+
+    # With an open road network, slow medium/long routes slightly so the
+    # A* search and final path remain easy to watch during a demonstration.
+    if distance_class == "SHORT":
+        return distance_class, 0.055, 1, 0.045
+    if distance_class == "MEDIUM":
+        return distance_class, 0.055, 2, 0.035
+    if distance_class == "LONG":
+        return distance_class, 0.045, 5, 0.022
+
+    return distance_class, 0.05, 1, 0.025
+
+
+# ============================================================
+# ROUTE CONNECTIVITY CHECK
+# ============================================================
+
+def check_route_connectivity(start_cell, goal_cell):
+    """Quickly determine whether start and goal are connected.
+
+    This checks the exact same road/blocked-cell graph used by A*.
+    It ignores weights because it only answers whether any route exists.
+    """
+
+    if start_cell == goal_cell:
+        return True, 1
+
+    visited = {start_cell}
+    queue = deque([start_cell])
+
+    while queue:
+        current_node = queue.popleft()
+
+        for neighbor, _ in get_neighbors(current_node):
+            if neighbor in visited:
+                continue
+
+            if neighbor == goal_cell:
+                return True, len(visited) + 1
+
+            visited.add(neighbor)
+            queue.append(neighbor)
+
+    return False, len(visited)
+
+
 # ============================================================
 # DIJKSTRA REFERENCE SEARCH
 # ============================================================
@@ -602,9 +690,12 @@ def compare_astar_vs_dijkstra():
     global dijkstra_weak_distance_m
     global dijkstra_weighted_cost
     global dijkstra_explored_nodes
+    global multi_total_dijkstra_explored, multi_total_dijkstra_cost
     global comparison_available
     global comparison_cost_matches
     global comparison_distance_matches
+    global no_route_possible
+    global no_route_explored_nodes
 
     if start is None or goal is None:
         return
@@ -718,7 +809,28 @@ comparison_available = False
 comparison_cost_matches = False
 comparison_distance_matches = False
 
-SEARCH_DELAY = 0.08
+# Instant planning-distance preview and distance-based animation profile.
+# The preview is straight-line grid distance between the two selected
+# access cells. It is calculated before A* starts and is used only to
+# choose how quickly the visual search/path animation should run.
+planning_distance_m = 0.0
+route_distance_class = "NONE"
+animation_search_delay = 0.05
+animation_search_batch = 1
+animation_path_delay = 0.025
+
+# Distance bands keep short routes visually deliberate while allowing
+# long routes to move faster without removing the animation.
+SHORT_ROUTE_MAX_M = 500.0
+MEDIUM_ROUTE_MAX_M = 1000.0
+
+# Fast failure detection for disconnected routes.
+no_route_possible = False
+no_route_explored_nodes = 0
+
+# A* remains animated, but difficult searches process several nodes per
+# visual update so the UI does not crawl on large searches.
+SEARCH_DELAY = 0.05
 PATH_DELAY = 0.025
 
 # ============================================================
@@ -909,6 +1021,7 @@ def reset_multi_stop_plan():
     global multi_total_distance_m, multi_total_highway_m
     global multi_total_weak_m, multi_total_weighted_cost
     global multi_total_explored, multi_pending_next_leg
+    global multi_total_dijkstra_explored, multi_total_dijkstra_cost
 
     multi_stop_mode = False
     multi_selection_phase = "start"
@@ -921,6 +1034,8 @@ def reset_multi_stop_plan():
     multi_total_weak_m = 0.0
     multi_total_weighted_cost = 0.0
     multi_total_explored = 0
+    multi_total_dijkstra_explored = 0
+    multi_total_dijkstra_cost = 0.0
     multi_pending_next_leg = False
 
 
@@ -965,6 +1080,7 @@ def calculate_multi_stop_route():
     global multi_total_distance_m, multi_total_highway_m
     global multi_total_weak_m, multi_total_weighted_cost
     global multi_total_explored, multi_pending_next_leg
+    global multi_total_dijkstra_explored, multi_total_dijkstra_cost
 
     if (
         not multi_stop_mode
@@ -985,6 +1101,8 @@ def calculate_multi_stop_route():
     multi_total_weak_m = 0.0
     multi_total_weighted_cost = 0.0
     multi_total_explored = 0
+    multi_total_dijkstra_explored = 0
+    multi_total_dijkstra_cost = 0.0
     multi_pending_next_leg = False
 
     start_name = multi_route_points[0]
@@ -1010,6 +1128,8 @@ def advance_multi_stop_leg():
     global multi_total_distance_m, multi_total_highway_m
     global multi_total_weak_m, multi_total_weighted_cost
     global multi_total_explored
+    global multi_total_dijkstra_explored, multi_total_dijkstra_cost
+    global dijkstra_explored_nodes, dijkstra_weighted_cost
 
     # Save the completed leg before moving to the next one.
     leg_number = multi_leg_index
@@ -1030,6 +1150,8 @@ def advance_multi_stop_leg():
     multi_total_weak_m += weak_distance_m
     multi_total_weighted_cost += weighted_route_cost
     multi_total_explored += len(closed_set)
+    multi_total_dijkstra_explored += dijkstra_explored_nodes
+    multi_total_dijkstra_cost += dijkstra_weighted_cost
 
     multi_leg_index += 1
 
@@ -1159,7 +1281,7 @@ def draw_multi_stop_controls():
     )
 
     draw_text(
-        "LIVE ROUTE STATUS",
+        "A* VS DIJKSTRA COMPARISON",
         (status_box.x + 12, status_box.y + 10),
         right_section_font
     )
@@ -1167,21 +1289,12 @@ def draw_multi_stop_controls():
     if searching:
         status = "A* SEARCHING"
         detail = f"Explored {len(closed_set)} nodes"
+    elif no_route_possible:
+        status = "NO ROUTE POSSIBLE"
+        detail = f"{start_location_name} → {goal_location_name}"
     elif path_animation:
         status = "DRAWING ROUTE"
         detail = "Final path animation in progress"
-    elif multi_stop_mode and multi_selection_phase == "ready":
-        status = "MULTI-STOP READY"
-        detail = f"{len(multi_route_points)} locations selected"
-    elif multi_stop_mode and multi_selection_phase == "start":
-        status = "WAITING FOR START"
-        detail = "Click a named location on the map"
-    elif multi_stop_mode and multi_selection_phase == "stops":
-        status = "ADDING STOPS"
-        detail = f"{max(0, len(multi_route_points) - 1)} stop(s) selected"
-    elif multi_stop_mode and multi_selection_phase == "destination":
-        status = "WAITING FOR DESTINATION"
-        detail = "Click the final named location"
     elif finished and final_path:
         status = "ROUTE COMPLETE"
         detail = f"Vehicle: {selected_vehicle}"
@@ -1200,32 +1313,91 @@ def draw_multi_stop_controls():
         right_hint_font
     )
 
+    if planning_distance_m > 0 and (
+        searching
+        or path_animation
+        or no_route_possible
+        or finished
+    ):
+        preview_text = (
+            f"Plan distance: {planning_distance_m:.0f} m  •  {route_distance_class}"
+        )
+        draw_text(
+            preview_text,
+            (status_box.x + 12, status_box.y + 73),
+            comparison_font
+        )
+
     if comparison_available:
+        multi_complete = (
+            multi_stop_mode
+            and multi_leg_stats
+            and not searching
+            and not path_animation
+            and finished
+            and multi_leg_index >= len(multi_route_points) - 1
+        )
+
+        if multi_complete:
+            display_astar_explored = multi_total_explored
+            display_dijkstra_explored = multi_total_dijkstra_explored
+            display_astar_cost = multi_total_weighted_cost
+            display_dijkstra_cost = multi_total_dijkstra_cost
+            display_cost_match = math.isclose(
+                display_astar_cost,
+                display_dijkstra_cost,
+                rel_tol=1e-9,
+                abs_tol=1e-9
+            )
+        else:
+            display_astar_explored = len(closed_set)
+            display_dijkstra_explored = dijkstra_explored_nodes
+            display_astar_cost = weighted_route_cost
+            display_dijkstra_cost = dijkstra_weighted_cost
+            display_cost_match = comparison_cost_matches
+
         explored_text = (
-            f"A* explored: {len(closed_set)}   |   Dijkstra: {dijkstra_explored_nodes}"
+            f"A* explored: {display_astar_explored}   |   "
+            f"Dijkstra: {display_dijkstra_explored}"
         )
         cost_text = (
-            f"Cost: A* {weighted_route_cost:.2f}   |   Dijkstra {dijkstra_weighted_cost:.2f}"
+            f"Cost: A* {display_astar_cost:.2f}   |   "
+            f"Dijkstra {display_dijkstra_cost:.2f}"
         )
+
+        if display_dijkstra_explored > 0:
+            reduction = (
+                (display_dijkstra_explored - display_astar_explored)
+                / display_dijkstra_explored
+            ) * 100.0
+        else:
+            reduction = 0.0
+
+        reduction_text = f"SEARCH REDUCTION: {reduction:.0f}%"
         result_text = (
             "RESULT: WEIGHTED COST MATCH"
-            if comparison_cost_matches
+            if display_cost_match
             else "RESULT: WEIGHTED COST CHECK"
         )
 
         draw_text(
             explored_text,
-            (status_box.x + 12, status_box.y + 73),
-            comparison_font
-        )
-        draw_text(
-            cost_text,
             (status_box.x + 12, status_box.y + 89),
             comparison_font
         )
         draw_text(
-            result_text,
+            cost_text,
             (status_box.x + 12, status_box.y + 105),
+            comparison_font
+        )
+        draw_text(
+            reduction_text,
+            (status_box.x + 12, status_box.y + 121),
+            comparison_font
+        )
+        draw_text(
+            result_text,
+            (status_box.x + 12, status_box.y + 137),
             popup_small_font
         )
 
@@ -1236,8 +1408,12 @@ def draw_scrollable_multi_stop_plan(popup):
 
 
 def handle_popup_scroll(mouse_position, wheel_y):
-    # Scrolling is no longer needed in the final three-panel layout.
-    return
+    global route_plan_scroll
+
+    route_panel = pygame.Rect(10, 10, LEFT_PANEL_WIDTH - 20, 410)
+    if route_panel.collidepoint(mouse_position):
+        route_plan_scroll -= wheel_y * 28
+        route_plan_scroll = max(0, route_plan_scroll)
 
 
 # ============================================================
@@ -1245,6 +1421,9 @@ def handle_popup_scroll(mouse_position, wheel_y):
 # ============================================================
 
 def reset_route():
+
+    global route_plan_scroll
+    route_plan_scroll = 0
 
     global open_heap
     global came_from
@@ -1263,6 +1442,8 @@ def reset_route():
     global searching
     global path_animation
     global finished
+    global no_route_possible
+    global no_route_explored_nodes
 
     global start_location_name
     global goal_location_name
@@ -1280,9 +1461,15 @@ def reset_route():
     global dijkstra_weak_distance_m
     global dijkstra_weighted_cost
     global dijkstra_explored_nodes
+    global multi_total_dijkstra_explored, multi_total_dijkstra_cost
     global comparison_available
     global comparison_cost_matches
     global comparison_distance_matches
+    global planning_distance_m
+    global route_distance_class
+    global animation_search_delay
+    global animation_search_batch
+    global animation_path_delay
 
     open_heap = []
     came_from = {}
@@ -1323,6 +1510,15 @@ def reset_route():
     comparison_cost_matches = False
     comparison_distance_matches = False
 
+    planning_distance_m = 0.0
+    route_distance_class = "NONE"
+    animation_search_delay = 0.05
+    animation_search_batch = 1
+    animation_path_delay = 0.025
+
+    no_route_possible = False
+    no_route_explored_nodes = 0
+
 
 # ============================================================
 # START A* SEARCH
@@ -1347,6 +1543,21 @@ def start_search(start_cell, goal_cell):
     global highway_distance_m
     global weak_distance_m
     global weighted_route_cost
+    global comparison_available
+    global comparison_cost_matches
+    global comparison_distance_matches
+    global planning_distance_m
+    global route_distance_class
+    global animation_search_delay
+    global animation_search_batch
+    global animation_path_delay
+    global dijkstra_distance_m
+    global dijkstra_highway_distance_m
+    global dijkstra_weak_distance_m
+    global dijkstra_weighted_cost
+    global dijkstra_explored_nodes
+    global no_route_possible
+    global no_route_explored_nodes
 
     open_heap = []
     came_from = {}
@@ -1374,6 +1585,47 @@ def start_search(start_cell, goal_cell):
     highway_distance_m = 0.0
     weak_distance_m = 0.0
     weighted_route_cost = 0.0
+
+    planning_distance_m = calculate_planning_distance(
+        start_cell,
+        goal_cell
+    )
+    (
+        route_distance_class,
+        animation_search_delay,
+        animation_search_batch,
+        animation_path_delay
+    ) = get_animation_profile(planning_distance_m)
+
+    comparison_available = False
+    comparison_cost_matches = False
+    comparison_distance_matches = False
+    dijkstra_distance_m = 0.0
+    dijkstra_highway_distance_m = 0.0
+    dijkstra_weak_distance_m = 0.0
+    dijkstra_weighted_cost = 0.0
+    dijkstra_explored_nodes = 0
+
+    no_route_possible = False
+    no_route_explored_nodes = 0
+
+    # A tiny connectivity pass prevents an impossible route from making
+    # the animated A* exhaust the whole reachable network first.
+    connected, checked_nodes = check_route_connectivity(
+        start_cell,
+        goal_cell
+    )
+
+    if not connected:
+        searching = False
+        path_animation = False
+        finished = True
+        final_path = []
+        path_index = 0
+        no_route_possible = True
+        no_route_explored_nodes = checked_nodes
+        current = None
+        return
 
     last_step_time = time.time()
 
@@ -1454,11 +1706,22 @@ def astar_step():
     global searching
     global path_animation
     global finished
+    global no_route_possible
+    global no_route_explored_nodes
+    global final_path
+    global path_index
 
     if not open_heap:
 
+        # The open set is exhausted without reaching the goal. This is
+        # the definitive A* no-route condition.
         searching = False
+        path_animation = False
         finished = True
+        no_route_possible = True
+        no_route_explored_nodes = len(closed_set)
+        final_path = []
+        path_index = 0
 
         return
 
@@ -1663,7 +1926,9 @@ def draw_panel_box(rect, title):
 
 
 def draw_route_plan_panel():
-    """Left panel: visual delivery itinerary."""
+    """Left panel: visual delivery itinerary with scrollable locations."""
+    global route_plan_scroll
+
     panel = pygame.Rect(10, 10, LEFT_PANEL_WIDTH - 20, 410)
     draw_panel_box(panel, "ROUTE PLANNER")
 
@@ -1673,7 +1938,6 @@ def draw_route_plan_panel():
         popup_small_font
     )
 
-    # Build the ordered locations that are currently known.
     if multi_stop_mode and multi_route_points:
         route_names = list(multi_route_points)
     else:
@@ -1683,21 +1947,39 @@ def draw_route_plan_panel():
         if goal_location_name is not None:
             route_names.append(goal_location_name)
 
+    # The itinerary area is clipped so long multi-stop plans never
+    # overwrite the instruction strip at the bottom of the panel.
     start_y = panel.y + 77
     line_x = panel.x + 24
+    divider_y = panel.bottom - 62
+    viewport = pygame.Rect(
+        panel.x + 10,
+        start_y - 6,
+        panel.width - 20,
+        divider_y - (start_y - 6) - 8
+    )
 
-    # Vertical route line.
+    item_spacing = 36
+    content_height = max(viewport.height, max(1, len(route_names)) * item_spacing)
+    max_scroll = max(0, content_height - viewport.height)
+    route_plan_scroll = max(0, min(route_plan_scroll, max_scroll))
+
+    previous_clip = screen.get_clip()
+    screen.set_clip(viewport)
+
+    shifted_start_y = start_y - route_plan_scroll
+
     if len(route_names) >= 2:
         pygame.draw.line(
             screen,
             (75, 88, 105),
-            (line_x, start_y + 8),
-            (line_x, start_y + (len(route_names) - 1) * 36 + 8),
+            (line_x, shifted_start_y + 8),
+            (line_x, shifted_start_y + (len(route_names) - 1) * item_spacing + 8),
             2
         )
 
     for index, name in enumerate(route_names):
-        y = start_y + index * 36
+        y = shifted_start_y + index * item_spacing
 
         if index == 0:
             node_color = (40, 170, 255)
@@ -1706,22 +1988,14 @@ def draw_route_plan_panel():
         else:
             node_color = (255, 190, 50)
 
-        pygame.draw.circle(
-            screen,
-            node_color,
-            (line_x, y + 8),
-            8
-        )
+        pygame.draw.circle(screen, node_color, (line_x, y + 8), 8)
 
         if index == 0:
             label = "START"
-            label_color = (40, 170, 255)
         elif index == len(route_names) - 1:
             label = "DESTINATION"
-            label_color = (255, 100, 100)
         else:
             label = f"STOP {index}"
-            label_color = (255, 205, 90)
 
         draw_text(
             label,
@@ -1741,8 +2015,28 @@ def draw_route_plan_panel():
             popup_small_font
         )
 
-    # Bottom instruction strip.
-    divider_y = panel.bottom - 62
+    screen.set_clip(previous_clip)
+
+    # Scrollbar appears only when the itinerary is longer than the viewport.
+    if max_scroll > 0:
+        track = pygame.Rect(
+            panel.right - 16,
+            viewport.y,
+            5,
+            viewport.height
+        )
+        pygame.draw.rect(screen, (48, 56, 68), track, border_radius=3)
+        thumb_height = max(24, int(viewport.height * viewport.height / content_height))
+        thumb_y = track.y + int(
+            (track.height - thumb_height) * route_plan_scroll / max_scroll
+        )
+        pygame.draw.rect(
+            screen,
+            (105, 118, 135),
+            pygame.Rect(track.x, thumb_y, track.width, thumb_height),
+            border_radius=3
+        )
+
     pygame.draw.line(
         screen,
         (55, 66, 80),
@@ -1780,8 +2074,17 @@ def draw_route_summary_panel():
 
     if searching:
         status = "A* SEARCHING"
-        status_value = f"Explored {len(closed_set)} nodes"
+        status_value = (
+            f"{planning_distance_m:.0f} m • {route_distance_class} • "
+            f"Explored {len(closed_set)}"
+        )
         status_fill = (65, 85, 105)
+    elif no_route_possible:
+        status = "NO ROUTE POSSIBLE"
+        status_value = (
+            f"{planning_distance_m:.0f} m planning distance • {route_distance_class}"
+        )
+        status_fill = (105, 58, 52)
     elif path_animation:
         status = "DRAWING ROUTE"
         status_value = f"{len(final_path)} path cells"
@@ -1830,12 +2133,16 @@ def draw_route_summary_panel():
         highway = multi_total_highway_m
         weak = multi_total_weak_m
     else:
-        distance = route_distance_m if finished else 0
-        cost = weighted_route_cost if finished else 0
-        explored = len(closed_set)
+        distance = route_distance_m if finished and final_path else 0
+        cost = weighted_route_cost if finished and final_path else 0
+        explored = (
+            no_route_explored_nodes
+            if no_route_possible
+            else len(closed_set)
+        )
         legs = 1 if finished and final_path else 0
-        highway = highway_distance_m if finished else 0
-        weak = weak_distance_m if finished else 0
+        highway = highway_distance_m if finished and final_path else 0
+        weak = weak_distance_m if finished and final_path else 0
 
     # "Stops" counts only the intermediate delivery points.
     # Start and final destination are intentionally excluded.
@@ -2247,10 +2554,19 @@ while running:
 
         if (
             current_time - last_step_time
-            >= SEARCH_DELAY
+            >= animation_search_delay
         ):
 
-            astar_step()
+            # The route's instant planning distance controls the visual
+            # pacing. Short routes stay deliberate, medium routes move
+            # faster, and long routes accelerate without losing the A*
+            # visualization.
+            steps_this_tick = animation_search_batch
+
+            for _ in range(steps_this_tick):
+                if not searching:
+                    break
+                astar_step()
 
             last_step_time = current_time
 
@@ -2262,7 +2578,7 @@ while running:
 
         if (
             current_time - last_step_time
-            >= PATH_DELAY
+            >= animation_path_delay
         ):
 
             path_index += 1
