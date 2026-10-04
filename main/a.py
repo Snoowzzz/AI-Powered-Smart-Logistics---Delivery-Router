@@ -40,17 +40,22 @@ pygame.display.set_caption("AI Smart Logistics Router - v0.8.7")
 
 clock = pygame.time.Clock()
 
-font = pygame.font.SysFont("Arial", 20)
-small_font = pygame.font.SysFont("Arial", 15)
-popup_title_font = pygame.font.SysFont("Arial", 22, bold=True)
-popup_font = pygame.font.SysFont("Arial", 17)
-popup_small_font = pygame.font.SysFont("Arial", 14)
-right_section_font = pygame.font.SysFont("Arial", 15, bold=True)
-right_hint_font = pygame.font.SysFont("Arial", 13)
-section_font = pygame.font.SysFont("Arial", 15, bold=True)
-metric_font = pygame.font.SysFont("Arial", 18, bold=True)
-accent_font = pygame.font.SysFont("Arial", 16, bold=True)
-comparison_font = pygame.font.SysFont("Arial", 13, bold=True)
+# DejaVu Sans is consistently available with Pygame on Linux and
+# renders more cleanly at the small UI sizes used by this application.
+# Slightly larger sizes improve readability without changing the layout scale.
+UI_FONT = "DejaVu Sans"
+font = pygame.font.SysFont(UI_FONT, 21)
+small_font = pygame.font.SysFont(UI_FONT, 16)
+popup_title_font = pygame.font.SysFont(UI_FONT, 23, bold=True)
+popup_font = pygame.font.SysFont(UI_FONT, 18, bold=True)
+popup_small_font = pygame.font.SysFont(UI_FONT, 15, bold=True)
+right_section_font = pygame.font.SysFont(UI_FONT, 16, bold=True)
+right_hint_font = pygame.font.SysFont(UI_FONT, 14, bold=True)
+section_font = pygame.font.SysFont(UI_FONT, 16, bold=True)
+metric_font = pygame.font.SysFont(UI_FONT, 20, bold=True)
+accent_font = pygame.font.SysFont(UI_FONT, 17, bold=True)
+comparison_font = pygame.font.SysFont(UI_FONT, 15, bold=True)
+itinerary_font = pygame.font.SysFont(UI_FONT, 16, bold=True)
 
 # Route-information popup. It is drawn over the map rather than
 # opening a separate operating-system window, so the application
@@ -1168,14 +1173,15 @@ def advance_multi_stop_leg():
 
 
 def draw_multi_stop_controls():
-    """Right panel: route controls with no redundant workflow text."""
+    """Right side: route controls and a separate A*/Dijkstra comparison card."""
     enabled = not searching and not path_animation
 
+    # Route controls remain compact and finish before the comparison card.
     panel = pygame.Rect(
         RIGHT_PANEL_X + 10,
         435,
         RIGHT_PANEL_WIDTH - 20,
-        355
+        225
     )
     draw_panel_box(panel, "ROUTE CONTROLS")
 
@@ -1195,31 +1201,13 @@ def draw_multi_stop_controls():
         109,
         22
     )
-    pygame.draw.rect(
-        screen,
-        (32, 40, 50),
-        badge,
-        border_radius=6
-    )
-    pygame.draw.rect(
-        screen,
-        (70, 82, 98),
-        badge,
-        1,
-        border_radius=6
-    )
+    pygame.draw.rect(screen, (32, 40, 50), badge, border_radius=6)
+    pygame.draw.rect(screen, (70, 82, 98), badge, 1, border_radius=6)
 
-    badge_surface = right_hint_font.render(
-        phase,
-        True,
-        (210, 216, 224)
-    )
+    badge_surface = right_hint_font.render(phase, True, (210, 216, 224))
     screen.blit(
         badge_surface,
-        (
-            badge.centerx - badge_surface.get_width() // 2,
-            badge.y + 4
-        )
+        (badge.centerx - badge_surface.get_width() // 2, badge.y + 3)
     )
 
     buttons = [
@@ -1246,87 +1234,31 @@ def draw_multi_stop_controls():
         pygame.draw.rect(screen, fill, rect, border_radius=8)
         pygame.draw.rect(screen, border, rect, 1, border_radius=8)
 
-        surface = popup_small_font.render(
-            label,
-            True,
-            text_color
-        )
+        surface = popup_small_font.render(label, True, text_color)
         screen.blit(
             surface,
-            (
-                rect.centerx - surface.get_width() // 2,
-                rect.centery - surface.get_height() // 2
-            )
+            (rect.centerx - surface.get_width() // 2,
+             rect.centery - surface.get_height() // 2)
         )
 
-    # Freed space becomes a useful live status area.
+    # --------------------------------------------------------
+    # Separate comparison card: it is intentionally outside the
+    # Route Controls panel so it reads as its own dashboard element.
+    # --------------------------------------------------------
     status_box = pygame.Rect(
-        panel.x + 16,
-        644,
-        panel.width - 32,
-        146
+        RIGHT_PANEL_X + 10,
+        670,
+        RIGHT_PANEL_WIDTH - 20,
+        130
     )
-    pygame.draw.rect(
-        screen,
-        (10, 14, 20),
-        status_box,
-        border_radius=9
-    )
-    pygame.draw.rect(
-        screen,
-        (82, 96, 112),
-        status_box,
-        1,
-        border_radius=9
-    )
+    pygame.draw.rect(screen, (9, 13, 19), status_box, border_radius=10)
+    pygame.draw.rect(screen, (92, 108, 126), status_box, 1, border_radius=10)
 
     draw_text(
         "A* VS DIJKSTRA COMPARISON",
         (status_box.x + 12, status_box.y + 10),
         right_section_font
     )
-
-    if searching:
-        status = "A* SEARCHING"
-        detail = f"Explored {len(closed_set)} nodes"
-    elif no_route_possible:
-        status = "NO ROUTE POSSIBLE"
-        detail = f"{start_location_name} → {goal_location_name}"
-    elif path_animation:
-        status = "DRAWING ROUTE"
-        detail = "Final path animation in progress"
-    elif finished and final_path:
-        status = "ROUTE COMPLETE"
-        detail = f"Vehicle: {selected_vehicle}"
-    else:
-        status = "READY"
-        detail = "Select locations to begin"
-
-    draw_text(
-        status,
-        (status_box.x + 12, status_box.y + 34),
-        right_section_font
-    )
-    draw_text(
-        detail,
-        (status_box.x + 12, status_box.y + 57),
-        right_hint_font
-    )
-
-    if planning_distance_m > 0 and (
-        searching
-        or path_animation
-        or no_route_possible
-        or finished
-    ):
-        preview_text = (
-            f"Plan distance: {planning_distance_m:.0f} m  •  {route_distance_class}"
-        )
-        draw_text(
-            preview_text,
-            (status_box.x + 12, status_box.y + 73),
-            comparison_font
-        )
 
     if comparison_available:
         multi_complete = (
@@ -1341,29 +1273,9 @@ def draw_multi_stop_controls():
         if multi_complete:
             display_astar_explored = multi_total_explored
             display_dijkstra_explored = multi_total_dijkstra_explored
-            display_astar_cost = multi_total_weighted_cost
-            display_dijkstra_cost = multi_total_dijkstra_cost
-            display_cost_match = math.isclose(
-                display_astar_cost,
-                display_dijkstra_cost,
-                rel_tol=1e-9,
-                abs_tol=1e-9
-            )
         else:
             display_astar_explored = len(closed_set)
             display_dijkstra_explored = dijkstra_explored_nodes
-            display_astar_cost = weighted_route_cost
-            display_dijkstra_cost = dijkstra_weighted_cost
-            display_cost_match = comparison_cost_matches
-
-        explored_text = (
-            f"A* explored: {display_astar_explored}   |   "
-            f"Dijkstra: {display_dijkstra_explored}"
-        )
-        cost_text = (
-            f"Cost: A* {display_astar_cost:.2f}   |   "
-            f"Dijkstra {display_dijkstra_cost:.2f}"
-        )
 
         if display_dijkstra_explored > 0:
             reduction = (
@@ -1373,32 +1285,67 @@ def draw_multi_stop_controls():
         else:
             reduction = 0.0
 
-        reduction_text = f"SEARCH REDUCTION: {reduction:.0f}%"
-        result_text = (
-            "RESULT: WEIGHTED COST MATCH"
-            if display_cost_match
-            else "RESULT: WEIGHTED COST CHECK"
-        )
+        metric_top = status_box.y + 39
+        gap = 10
+        metric_w = (status_box.width - 24 - gap) // 2
+        metric_h = 40
 
-        draw_text(
-            explored_text,
-            (status_box.x + 12, status_box.y + 89),
-            comparison_font
+        astar_rect = pygame.Rect(status_box.x + 12, metric_top, metric_w, metric_h)
+        dijkstra_rect = pygame.Rect(astar_rect.right + gap, metric_top, metric_w, metric_h)
+
+        for rect, label, value in (
+            (astar_rect, "A* NODES", display_astar_explored),
+            (dijkstra_rect, "DIJKSTRA NODES", display_dijkstra_explored),
+        ):
+            pygame.draw.rect(screen, (25, 31, 39), rect, border_radius=7)
+            pygame.draw.rect(screen, (76, 90, 106), rect, 1, border_radius=7)
+
+            label_surface = comparison_font.render(label, True, (205, 212, 221))
+            value_surface = metric_font.render(str(value), True, (255, 255, 255))
+            screen.blit(label_surface, (rect.x + 9, rect.y + 3))
+            screen.blit(value_surface, (rect.x + 9, rect.y + 18))
+
+        reduction_rect = pygame.Rect(
+            status_box.x + 12,
+            metric_top + metric_h + 9,
+            status_box.width - 24,
+            40
         )
-        draw_text(
-            cost_text,
-            (status_box.x + 12, status_box.y + 105),
-            comparison_font
+        pygame.draw.rect(screen, (35, 76, 58), reduction_rect, border_radius=8)
+        pygame.draw.rect(screen, (105, 190, 140), reduction_rect, 1, border_radius=8)
+
+        reduction_label = comparison_font.render(
+            "SEARCH REDUCTION",
+            True,
+            (225, 242, 231)
         )
-        draw_text(
-            reduction_text,
-            (status_box.x + 12, status_box.y + 121),
-            comparison_font
+        reduction_value = pygame.font.SysFont(UI_FONT, 22, bold=True).render(
+            f"{reduction:.0f}%",
+            True,
+            (255, 255, 255)
         )
+        screen.blit(reduction_label, (reduction_rect.x + 10, reduction_rect.y + 5))
+        screen.blit(
+            reduction_value,
+            (reduction_rect.right - reduction_value.get_width() - 12, reduction_rect.y + 4)
+        )
+    elif no_route_possible:
         draw_text(
-            result_text,
-            (status_box.x + 12, status_box.y + 137),
-            popup_small_font
+            "No valid comparison — route unreachable",
+            (status_box.x + 12, status_box.y + 48),
+            right_hint_font
+        )
+    elif searching:
+        draw_text(
+            "A* SEARCHING...",
+            (status_box.x + 12, status_box.y + 48),
+            right_section_font
+        )
+    else:
+        draw_text(
+            "Results appear after route calculation",
+            (status_box.x + 12, status_box.y + 48),
+            right_hint_font
         )
 
 def draw_scrollable_multi_stop_plan(popup):
@@ -1935,7 +1882,7 @@ def draw_route_plan_panel():
     draw_text(
         "Delivery itinerary",
         (panel.x + 16, panel.y + 39),
-        popup_small_font
+        itinerary_font
     )
 
     if multi_stop_mode and multi_route_points:
@@ -2323,12 +2270,6 @@ def draw_vehicle_controls():
         (panel.x + 16, 150),
         (panel.right - 16, 150),
         1
-    )
-
-    draw_text(
-        f"Selected vehicle  •  {selected_vehicle}",
-        (panel.x + 16, 157),
-        right_hint_font
     )
 
     multiplier_box = pygame.Rect(
