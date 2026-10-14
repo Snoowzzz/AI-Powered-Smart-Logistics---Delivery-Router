@@ -107,10 +107,10 @@ multi_total_dijkstra_explored = 0
 multi_total_dijkstra_cost = 0.0
 multi_pending_next_leg = False
 
-multi_route_button_rect = pygame.Rect(RIGHT_PANEL_X + 20, 492, 320, 40)
-multi_add_stop_rect = pygame.Rect(RIGHT_PANEL_X + 20, 540, 155, 40)
-multi_set_destination_rect = pygame.Rect(RIGHT_PANEL_X + 185, 540, 155, 40)
-multi_calculate_rect = pygame.Rect(RIGHT_PANEL_X + 20, 590, 320, 42)
+multi_route_button_rect = pygame.Rect(RIGHT_PANEL_X + 20, 480, 320, 40)
+multi_add_stop_rect = pygame.Rect(RIGHT_PANEL_X + 20, 528, 155, 40)
+multi_set_destination_rect = pygame.Rect(RIGHT_PANEL_X + 185, 528, 155, 40)
+multi_calculate_rect = pygame.Rect(RIGHT_PANEL_X + 20, 578, 320, 42)
 
 # ============================================================
 # VEHICLE PROFILES — STAGE 2
@@ -1179,7 +1179,7 @@ def draw_multi_stop_controls():
     # Route controls remain compact and finish before the comparison card.
     panel = pygame.Rect(
         RIGHT_PANEL_X + 10,
-        435,
+        423,
         RIGHT_PANEL_WIDTH - 20,
         225
     )
@@ -1247,9 +1247,9 @@ def draw_multi_stop_controls():
     # --------------------------------------------------------
     status_box = pygame.Rect(
         RIGHT_PANEL_X + 10,
-        670,
+        645,
         RIGHT_PANEL_WIDTH - 20,
-        130
+        150
     )
     pygame.draw.rect(screen, (9, 13, 19), status_box, border_radius=10)
     pygame.draw.rect(screen, (92, 108, 126), status_box, 1, border_radius=10)
@@ -1288,7 +1288,7 @@ def draw_multi_stop_controls():
         metric_top = status_box.y + 39
         gap = 10
         metric_w = (status_box.width - 24 - gap) // 2
-        metric_h = 40
+        metric_h = 42
 
         astar_rect = pygame.Rect(status_box.x + 12, metric_top, metric_w, metric_h)
         dijkstra_rect = pygame.Rect(astar_rect.right + gap, metric_top, metric_w, metric_h)
@@ -1307,7 +1307,7 @@ def draw_multi_stop_controls():
 
         reduction_rect = pygame.Rect(
             status_box.x + 12,
-            metric_top + metric_h + 9,
+            metric_top + metric_h + 12,
             status_box.width - 24,
             40
         )
